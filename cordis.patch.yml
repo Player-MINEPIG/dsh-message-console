@@ -1,0 +1,5 @@
+- insert:
+    - id: dsh-message-console
+      name: dsh-message-console
+      config:
+        storageDir: !!js dshHomePath('dsh-message-console')
