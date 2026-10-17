@@ -41,6 +41,7 @@
     "dsh-prompt-assembler": "https://codeload.github.com/Player-MINEPIG/dsh-prompt-assembler/tar.gz/003e73f713d7289033a3f69533d95cb19a1d259e"
   },
   "devDependencies": {
+    "dsh-jev-plugin": "https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/4ab0a1de28cd92958d061a1b733581f10d7c2a5d",
     "esbuild": "0.28.2",
     "react": "18.3.1",
     "react-dom": "18.3.1"

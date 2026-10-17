@@ -6,9 +6,10 @@ import { join, resolve } from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createModelCatalog } from '../src/model-catalog.js';
+import * as jev from 'dsh-jev-plugin';
 
-const root=process.env.DMC_DSH_ROOT,jevRoot=process.env.DMC_JEV_ROOT;
-test('Jev fork mounts on stock DSH and calls an offline native provider without credentials', {skip:!root||!jevRoot,timeout:10_000},async()=>{
+const root=process.env.DMC_DSH_ROOT;
+test('pinned Jev fork mounts on stock DSH and calls an offline native provider without credentials', {skip:!root,timeout:10_000},async()=>{
   const require=createRequire(join(resolve(root),'package.json'));
   const load=name=>import(pathToFileURL(require.resolve(`@deepseek-ai/${name}`)).href);
   const {Context}=await load('cordis'),llm=await load('dsh-llm');
@@ -25,7 +26,7 @@ test('Jev fork mounts on stock DSH and calls an offline native provider without 
       }
     }
     ctx.llm.registerAdapter(['offline'],new Offline());
-    await ctx.plugin(await import(pathToFileURL(join(resolve(jevRoot),'lib/index.js')).href),{enabled:true,provider:'offline-profile',dataDir:directory,profiles:[{id:'offline-profile',name:'Offline decision',provider:'native',nativeProvider:'offline',model:'test'}]});
+    await ctx.plugin(jev,{enabled:true,provider:'offline-profile',dataDir:directory,profiles:[{id:'offline-profile',name:'Offline decision',provider:'native',nativeProvider:'offline',model:'test'}]});
     const catalog=await createModelCatalog(ctx).catalog();
     assert.deepEqual(catalog.decisionProfiles,[{id:'offline-profile',name:'Offline decision'}]);
     assert.equal(catalog.defaultDecisionProfile,'offline-profile');

@@ -8,7 +8,7 @@ export { request } from './api.js';
 const settingNames = { fetchHours: '抓取间隔（小时）', organizeHours: '整理间隔（小时）', language: '摘要语言', decisionProfile: 'Jev 决策 profile', decisionConfidence: '决策概率阈值', decisionMargin: '决策概率差阈值', writerProvider: '生成 / 分析提供商', writerModel: '生成 / 分析模型', supervisorProvider: '监督提供商', supervisorModel: '监督模型', replyStyle: '回复风格', reviewFocus: 'PR 审查重点' };
 const settingGroups = [
   { title: '抓取与整理频率', keys: ['fetchHours','organizeHours'], hint: '自动整理只处理新变化和需要更新的既有分析。手动整理已有数据也包含尚未分析的历史基线。' },
-  { title: 'Jev · 轻量决策', keys: ['decisionProfile','decisionConfidence','decisionMargin'], hint: '评论先由 Jev 输出忽略、拟稿、人工介入的选项概率。选择默认项时使用 Jev 的默认 profile。此路线独立于生成模型。' },
+  { title: 'Jev · 轻量决策', keys: ['decisionProfile','decisionConfidence','decisionMargin'], hint: '评论先由 Jev 输出忽略、拟稿、人工介入的选项概率。普通模型的概率为自报估计，未经校准，阈值需用实际样本验证。选择默认项时使用 Jev 的默认 profile。此路线独立于生成模型。' },
   { title: '生成 / 分析模型', keys: ['writerProvider','writerModel'], hint: '用于低置信决策的一次升级、评论拟稿、PR 审查、issue 核实和 release 摘要。摘要与正文来自同一次生成 / 分析输出，没有独立总结调用。' },
   { title: '独立监督模型', keys: ['supervisorProvider','supervisorModel'], hint: '有拟发布正文后才检查草稿。未单独填写的字段继承生成 / 分析模型，但仍创建独立会话。监督通过仍需用户审核发布。' },
   { title: '内容偏好', keys: ['language','replyStyle','reviewFocus'], hint: '按来源平台和内容能力生效。' },

@@ -30,12 +30,13 @@ npm run demo
 
 ## DSH 开发安装
 
-先在隔离的开发 profile 验证。需要已启用的 DSH Agent/会话持久化/Web 服务、标准 `dsh-prompt-assembler` 1.1.1（[指定兼容分支的固定提交 `003e73f`](https://github.com/Player-MINEPIG/dsh-prompt-assembler/commit/003e73f713d7289033a3f69533d95cb19a1d259e)），以及提供独立 `decisionModels.ask` 服务的 Jev 插件。安装 npm 依赖本身不等于在宿主中启用了对应服务。已有 Assembler 时复用同一个实例。
+先在隔离的开发 profile 验证。需要已启用的 DSH Agent/会话持久化/Web 服务、标准 `dsh-prompt-assembler` 1.1.1（[固定提交 `003e73f`](https://github.com/Player-MINEPIG/dsh-prompt-assembler/commit/003e73f713d7289033a3f69533d95cb19a1d259e)），以及用户 Jev fork 0.3.5（[固定提交 `4ab0a1d`](https://github.com/Player-MINEPIG/dsh-jev-plugin/commit/4ab0a1de28cd92958d061a1b733581f10d7c2a5d)）。安装 npm 依赖本身不等于在宿主中启用了对应服务。已有 Assembler 或 Jev 时更新并复用同一个实例，消息插件只调用共享的 `decisionModels.ask`，不另存 Jev URL 或密钥。
 
 ```sh
 npm run build
 npm pack --pack-destination .local
 dsh plugin --profile YOUR_DEV_PROFILE add "dsh-prompt-assembler@https://codeload.github.com/Player-MINEPIG/dsh-prompt-assembler/tar.gz/003e73f713d7289033a3f69533d95cb19a1d259e"
+dsh plugin --profile YOUR_DEV_PROFILE add "dsh-jev-plugin@https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/4ab0a1de28cd92958d061a1b733581f10d7c2a5d"
 dsh plugin --profile YOUR_DEV_PROFILE add /absolute/path/to/dsh-message-console/.local/dsh-message-console-0.1.0.tgz
 ```
 
@@ -50,7 +51,7 @@ dsh plugin --profile YOUR_DEV_PROFILE add /absolute/path/to/dsh-message-console/
 
 从 DSH 左侧插件区域打开“看点什么”，在“全局配置”从宿主目录选择提供商与模型，在“添加来源”绑定已有工作区。`dsh-plugin-subscriptions` 通过宿主 LLM 提供商接口复用，不单独保存供应商凭据。Jev profile 不配置时使用 Jev 默认 profile；若其输出只有选项而无完整概率，插件会记录失败，不冒充获得置信度。
 
-本地 Jev fork 0.3.4 已在新版宿主隔离加载，并经合成原生模型验证 `decisionModels.ask`，未使用真实 Jev 凭据。订阅提供商仍由宿主目录接入，但第三方提供商插件也必须兼容该宿主。`dsh-plugin-subscriptions` 0.9.9 的 peer 声明尚不包含 `0.2.1-rc.2`，本轮未验证其真实订阅调用，不应强行跳过依赖检查。
+Jev fork 0.3.5 的 native 普通模型和 custom 路径均已用合成输入验证完整概率、低置信升级、失败记录和人工审核边界。native 的概率是模型自报估计，不是 token 概率或经过校准的置信度；阈值仍需真实样本验证。工作记录保留 Jev 返回的 profile、model、answers 和 usage，不推测服务未提供的概率来源 metadata。未使用真实 Jev 凭据。订阅提供商仍由宿主目录接入，但第三方提供商插件也必须兼容该宿主。`dsh-plugin-subscriptions` 0.9.9 的 peer 声明尚不包含 `0.2.1-rc.2`，本轮未验证其真实订阅调用，不应强行跳过依赖检查。
 
 工作模型和监督模型可以使用不同 provider/model；即便使用同一模型，也分别创建独立会话。任务插件不是依赖；Memory Manager 不作为硬依赖。
 
@@ -72,7 +73,7 @@ Cookie 连接器运行时不需要 Chrome。可在自己的 macOS 上显式导�
 
 ## 验证与扩展
 
-`npm test` 覆盖状态、并发审核、发送不确定性、失败恢复、GitHub 协议和 HTTP 入口。可使用本机 DSH 安装执行额外的离线宿主测试（不加载默认 profile 或真实模型凭据）：
+`npm test` 覆盖状态、并发审核、发送不确定性、失败恢复、GitHub 协议和 HTTP 入口。开发依赖锁定上述 Jev 提交，默认运行 native/custom 共享服务到工作流与持久记录的离线测试；native 使用真实 DSH LLM 服务和合成适配器，custom 拦截 HTTP 并返回合成响应，生成与监督使用合成执行器。可使用本机 DSH 安装执行额外的离线宿主测试（不加载默认 profile 或真实模型凭据）：
 
 ```sh
 DMC_DSH_ROOT=/absolute/path/to/dsh-install node --test test/host.test.js
@@ -80,15 +81,14 @@ DMC_DSH_ROOT=/absolute/path/to/dsh-install node --test test/host.test.js
 
 宿主测试使用真实 Agent Loop、标准 Assembler、工作区、JSONL 持久化和冷会话查询，验证工具限制、输入顺序、尾部 PHI、必需运行上下文、模型目录白名单，以及成功、失败和人工会话释放后完整历史不变。模型输出来自离线合成适配器；这些检查不代替 Web 和真实账号验收。未设置该环境变量时，此测试跳过。
 
-可另指定已安装的 Jev fork 目录，验证真实服务挂载、profile 目录和经宿主合成模型的调用，不读取凭据或联网：
+使用同一固定 Jev 开发依赖验证指定宿主的服务挂载、profile 目录和经宿主合成模型的调用，不读取凭据或联网：
 
 ```sh
 DMC_DSH_ROOT=/absolute/path/to/dsh-install \
-DMC_JEV_ROOT=/absolute/path/to/dsh-jev-plugin \
 node --test test/host.test.js test/jev-host.test.js
 ```
 
-该测试保留合成返回的选项概率，只证明接口传递；不能据此认定任意实际 Jev provider 都返回完整概率。
+这些测试验证合同与分流，不证明真实模型判断准确。Jev 拒绝缺失概率的响应后，本插件保留实际错误且停止后续生成；native 上游流失败在当前 Jev 中可能仅返回“native 响应不完整”，无法从 `ask` 恢复原始错误详情。
 
 业务模型、连接器和宿主执行层分离，新增平台需要实现代码适配。详见 [架构与连接器合同](docs/ARCHITECTURE.md)。本项目采用 [MIT](LICENSE)。
 
