@@ -30,18 +30,18 @@ npm run demo
 
 ## DSH 开发安装
 
-先在隔离的开发 profile 验证。需要已启用的 DSH Agent/会话持久化/Web 服务、标准 `dsh-prompt-assembler` 精确版本 1.1.1（[发布标签 `v1.1.1`](https://github.com/Player-MINEPIG/dsh-prompt-assembler/tree/v1.1.1)，提交 `f757ae75659e4d78cee46ab022987da6cf82fe94`），以及用户 Jev fork 0.3.6（[固定提交 `2ec0510`](https://github.com/Player-MINEPIG/dsh-jev-plugin/commit/2ec0510ffcdabe790df8c93b0b40aee07b93c342)）。
+先在隔离的开发 profile 验证。需要已启用的 DSH Agent/会话持久化/Web 服务、标准 `dsh-prompt-assembler` 1.1.2（[固定提交 `21183e1`](https://github.com/Player-MINEPIG/dsh-prompt-assembler/commit/21183e18c9e8e7f7f01fda04b5af4218ce194539)），以及用户 Jev fork 0.3.6（[固定提交 `2ec0510`](https://github.com/Player-MINEPIG/dsh-jev-plugin/commit/2ec0510ffcdabe790df8c93b0b40aee07b93c342)）。
 
 安装 npm 依赖本身不等于在宿主中启用了对应服务。
 
-Assembler 1.1.1 从“插件 → 已安装插件 → dsh-prompt-assembler → 配置当前会话”打开装配编辑器。控制台使用标准 native 后端，不需要核心扩展。本次由同版本的旧源码提交 `003e73f` 更新至上述正式发布包，lockfile 固定 npm 包的完整性摘要。
+Assembler 1.1.2 从“插件 → 已安装插件 → dsh-prompt-assembler → 配置当前会话”打开装配编辑器。控制台使用标准 native 后端，不需要核心扩展。依赖固定到包含 DSH owner 认证修复的源码提交及完整性摘要，不假定 npm 已发布此补丁。远程 Web 还需配置 Assembler 的 `security.allowRemoteClients: true` 与精确 `security.allowedHosts`，并使用正常 DSH 登录态；网络开关不替代认证。
 
 已有 Assembler 或 Jev 时更新并复用同一个实例，消息插件只调用共享的 `decisionModels.ask`，不另存 Jev URL 或密钥。
 
 ```sh
 npm run build
 npm pack --pack-destination .local
-dsh plugin --profile YOUR_DEV_PROFILE add "dsh-prompt-assembler@1.1.1"
+dsh plugin --profile YOUR_DEV_PROFILE add "dsh-prompt-assembler@https://codeload.github.com/Player-MINEPIG/dsh-prompt-assembler/tar.gz/21183e18c9e8e7f7f01fda04b5af4218ce194539"
 dsh plugin --profile YOUR_DEV_PROFILE add "dsh-jev-plugin@https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/2ec0510ffcdabe790df8c93b0b40aee07b93c342"
 dsh plugin --profile YOUR_DEV_PROFILE add /absolute/path/to/dsh-message-console/.local/dsh-message-console-0.1.0.tgz
 ```

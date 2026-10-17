@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "cheerio": "^1.1.2",
-    "dsh-prompt-assembler": "1.1.1"
+    "dsh-prompt-assembler": "https://codeload.github.com/Player-MINEPIG/dsh-prompt-assembler/tar.gz/21183e18c9e8e7f7f01fda04b5af4218ce194539"
   },
   "devDependencies": {
     "dsh-jev-plugin": "https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/2ec0510ffcdabe790df8c93b0b40aee07b93c342",
