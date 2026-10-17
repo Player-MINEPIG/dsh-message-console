@@ -18,7 +18,7 @@
 
 ## 本地开发与预览
 
-Node.js 22（适配目标 DSH 0.2.0-rc.2；宿主本身要求 Node ^22.19.0 或 >=24）。
+Node.js `^22.19.0 || >=24`，DSH `0.2.1-rc.2`，Cordis `4.0.5`。本版本仅声明这一宿主组合的兼容性，不自动升级宿主或迁移已有数据。
 
 ```sh
 npm ci
@@ -30,11 +30,12 @@ npm run demo
 
 ## DSH 开发安装
 
-先在隔离的开发 profile 验证。需要已启用的 DSH Agent/会话持久化/Web 服务、标准 `dsh-prompt-assembler` 1.1.0，以及提供独立 `decisionModels.ask` 服务的 Jev 插件。安装 npm 依赖本身不等于在宿主中启用了对应服务。已有 Assembler 时复用同一个实例。
+先在隔离的开发 profile 验证。需要已启用的 DSH Agent/会话持久化/Web 服务、标准 `dsh-prompt-assembler` 1.1.1（[指定兼容分支的固定提交 `003e73f`](https://github.com/Player-MINEPIG/dsh-prompt-assembler/commit/003e73f713d7289033a3f69533d95cb19a1d259e)），以及提供独立 `decisionModels.ask` 服务的 Jev 插件。安装 npm 依赖本身不等于在宿主中启用了对应服务。已有 Assembler 时复用同一个实例。
 
 ```sh
 npm run build
 npm pack --pack-destination .local
+dsh plugin --profile YOUR_DEV_PROFILE add "dsh-prompt-assembler@https://codeload.github.com/Player-MINEPIG/dsh-prompt-assembler/tar.gz/003e73f713d7289033a3f69533d95cb19a1d259e"
 dsh plugin --profile YOUR_DEV_PROFILE add /absolute/path/to/dsh-message-console/.local/dsh-message-console-0.1.0.tgz
 ```
 
@@ -49,6 +50,8 @@ dsh plugin --profile YOUR_DEV_PROFILE add /absolute/path/to/dsh-message-console/
 
 从 DSH 左侧插件区域打开“看点什么”，在“全局配置”从宿主目录选择提供商与模型，在“添加来源”绑定已有工作区。`dsh-plugin-subscriptions` 通过宿主 LLM 提供商接口复用，不单独保存供应商凭据。Jev profile 不配置时使用 Jev 默认 profile；若其输出只有选项而无完整概率，插件会记录失败，不冒充获得置信度。
 
+本地 Jev fork 0.3.4 已在新版宿主隔离加载，并经合成原生模型验证 `decisionModels.ask`，未使用真实 Jev 凭据。订阅提供商仍由宿主目录接入，但第三方提供商插件也必须兼容该宿主。`dsh-plugin-subscriptions` 0.9.9 的 peer 声明尚不包含 `0.2.1-rc.2`，本轮未验证其真实订阅调用，不应强行跳过依赖检查。
+
 工作模型和监督模型可以使用不同 provider/model；即便使用同一模型，也分别创建独立会话。任务插件不是依赖；Memory Manager 不作为硬依赖。
 
 ## 账号与目前限制
@@ -61,6 +64,12 @@ dsh plugin --profile YOUR_DEV_PROFILE add /absolute/path/to/dsh-message-console/
 - `unknown` 发布结果需要人工去原平台核实；本版没有自动对账和恢复发送的界面。
 - 已验证真实账号只读采集及隔离宿主调用；完整默认profile和实际订阅模型的处理链路尚未端到端验收。
 
+### 无浏览器的 VPS
+
+Cookie 连接器运行时不需要 Chrome。可在自己的 macOS 上显式导出，经安全通道传到 VPS 上 DSH 运行用户的私有目录，设置权限 `0600`，再将 `cookieFile` 指向该文件。连接器每次请求重读文件；登录失效后需在本机重新登录、导出并替换。VPS 的出口 IP 是否被平台接受、Cookie 有效期和风控限制需要单独实测。
+
+迁移来源数据时还需处理工作区 ID、目录路径及真实 DSH 会话历史，不能只复制插件状态文件。先使用独立的新宿主数据目录验证，再决定是否迁移旧数据。
+
 ## 验证与扩展
 
 `npm test` 覆盖状态、并发审核、发送不确定性、失败恢复、GitHub 协议和 HTTP 入口。可使用本机 DSH 安装执行额外的离线宿主测试（不加载默认 profile 或真实模型凭据）：
@@ -69,7 +78,17 @@ dsh plugin --profile YOUR_DEV_PROFILE add /absolute/path/to/dsh-message-console/
 DMC_DSH_ROOT=/absolute/path/to/dsh-install node --test test/host.test.js
 ```
 
-宿主测试使用真实 Agent Loop 与标准 Assembler、合成 LLM，以及内存会话检查服务；不代替 Web 会话恢复和真实账号验收。未设置该环境变量时，此测试跳过。
+宿主测试使用真实 Agent Loop、标准 Assembler、工作区、JSONL 持久化和冷会话查询，验证工具限制、输入顺序、尾部 PHI、必需运行上下文、模型目录白名单，以及成功、失败和人工会话释放后完整历史不变。模型输出来自离线合成适配器；这些检查不代替 Web 和真实账号验收。未设置该环境变量时，此测试跳过。
+
+可另指定已安装的 Jev fork 目录，验证真实服务挂载、profile 目录和经宿主合成模型的调用，不读取凭据或联网：
+
+```sh
+DMC_DSH_ROOT=/absolute/path/to/dsh-install \
+DMC_JEV_ROOT=/absolute/path/to/dsh-jev-plugin \
+node --test test/host.test.js test/jev-host.test.js
+```
+
+该测试保留合成返回的选项概率，只证明接口传递；不能据此认定任意实际 Jev provider 都返回完整概率。
 
 业务模型、连接器和宿主执行层分离，新增平台需要实现代码适配。详见 [架构与连接器合同](docs/ARCHITECTURE.md)。本项目采用 [MIT](LICENSE)。
 
@@ -111,7 +130,7 @@ B站来源填写视频BV号、av号或完整视频链接。每个来源可添加
 
 ### 复用宿主模型目录与阶段背景
 
-生成与监督模型从 DSH 的实际提供商和模型目录选择，包含宿主已注册的订阅提供商。模型列表随提供商按需读取，可以显式刷新。Jev 使用单独的 profile 下拉，保留使用 Jev 默认的选项。列表显示名称并辅助显示 ID，不需要手工填写 ID，也不会自动选择第一项。旧选择暂不可用时保留原值并提示重新选择；切换提供商会清除相关旧模型，不能跨提供商继承全局模型。
+生成与监督模型从 DSH 的实际提供商和模型目录选择，包含宿主已注册的订阅提供商。模型列表随提供商按需读取，可以显式刷新。Jev 使用单独的 profile 下拉，保留使用 Jev 默认的选项。列表显示名称并辅助显示 ID，不需要手工填写 ID，也不会自动选择第一项。DSH 0.2.1-rc.2 的官方 DeepSeek 适配器在缺少凭据时会返回空模型列表；可先在宿主模型设置中完成配置，再显式刷新目录。插件不自行补写凭据或构造模型列表。旧选择暂不可用时保留原值并提示重新选择；切换提供商会清除相关旧模型，不能跨提供商继承全局模型。
 
 来源配置保留现有上下文、资料、关注规则、PHI 和装配顺序作为共用背景。你可以分别为 Jev 轻量决策、低置信升级、生成与分析、独立监督补充专属上下文和资料。生成与分析按来源能力执行评论拟稿、PR 审查、issue 核实或 release 摘要，没有独立总结调用。
 

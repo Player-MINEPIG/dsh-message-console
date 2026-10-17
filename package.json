@@ -27,17 +27,18 @@
     "pack:check": "npm pack --dry-run"
   },
   "engines": {
-    "node": ">=22"
+    "node": "^22.19.0 || >=24",
+    "dsh": "0.2.1-rc.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "4.0.4",
-    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-session": "0.2.0-rc.2",
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.2",
     "@deepseek-ai/schemastery": "3.18.4"
   },
   "dependencies": {
     "cheerio": "^1.1.2",
-    "dsh-prompt-assembler": "1.1.0"
+    "dsh-prompt-assembler": "https://codeload.github.com/Player-MINEPIG/dsh-prompt-assembler/tar.gz/003e73f713d7289033a3f69533d95cb19a1d259e"
   },
   "devDependencies": {
     "esbuild": "0.28.2",

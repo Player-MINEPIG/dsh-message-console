@@ -19,6 +19,14 @@ DSH Web slots / uiWorkspace
 
 `src/core.js` 不依赖 DSH。`src/dsh.js` 将工作角色映射到独立原生会话，保存会话引用后才执行；人工背景通过公开 `Session.append` 写入真实来源消息，不伪造模型输出或工具记录。每个版本的人工入口可新建会话，旧会话仍可查看。
 
+## 宿主兼容边界
+
+当前目标为 DSH `0.2.1-rc.2`、Cordis `4.0.5`，Assembler 标准 native 后端固定到兼容分支提交 `003e73f713d7289033a3f69533d95cb19a1d259e`（1.1.1）。包的 `engines.dsh`、DSH peer 和锁文件共同声明这一组合，不承诺旧宿主继续兼容。此适配不修改插件状态格式、不迁移真实历史，也不修改宿主核心。
+
+新版宿主将工作目录等动态事实放在 runtime context。Assembler 兼容层保留旧文本策略的 `cwd` 变量，并保留宿主必需上下文；插件自身仍通过公开 `agents.create`、`followup`、`whenIdle`、`sessions.flush` 和 `Session.append` 驱动独立角色。尾部 PHI 使用真实 user/pre-step 消息。JSONL 持久化插件的新版入口是命名 `apply`，离线集成测试按模块加载，不再假定 default 导出。
+
+模型目录继续使用 `llm.listProviders()` 和异步 `listModels(provider)`，只返回 provider/id/name。Jev 使用独立的 `decisionModels.config()` 白名单投影及 `ask()`；不因目录探测读取或返回密钥。第三方提供商的 peer/宿主兼容性由其自身声明，不能通过本插件的目录适配绕过。
+
 ## 连接器
 
 ```js
