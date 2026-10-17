@@ -21,7 +21,7 @@ DSH Web slots / uiWorkspace
 
 ## 宿主兼容边界
 
-当前目标为 DSH `0.2.1-rc.2`、Cordis `4.0.5`，Assembler 标准 native 后端固定到兼容分支提交 `003e73f713d7289033a3f69533d95cb19a1d259e`（1.1.1）。包的 `engines.dsh`、DSH peer 和锁文件共同声明这一组合，不承诺旧宿主继续兼容。此适配不修改插件状态格式、不迁移真实历史，也不修改宿主核心。
+当前目标为 DSH `0.2.1-rc.2`、Cordis `4.0.5`，Assembler 标准 native 后端固定到 npm 精确版本 `1.1.1` 及锁文件完整性摘要，对应正式标签 `v1.1.1` 的提交 `f757ae75659e4d78cee46ab022987da6cf82fe94`。包的 `engines.dsh`、DSH peer 和锁文件共同声明这一组合，不承诺旧宿主继续兼容。此适配不修改插件状态格式、不迁移真实历史，也不修改宿主核心。
 
 新版宿主将工作目录等动态事实放在 runtime context。Assembler 兼容层保留旧文本策略的 `cwd` 变量，并保留宿主必需上下文；插件自身仍通过公开 `agents.create`、`followup`、`whenIdle`、`sessions.flush` 和 `Session.append` 驱动独立角色。尾部 PHI 使用真实 user/pre-step 消息。JSONL 持久化插件的新版入口是命名 `apply`，离线集成测试按模块加载，不再假定 default 导出。
 

@@ -25,8 +25,8 @@ const scenarios = [
   { id: 'upstream-error', roles: [], error: { native: /native 响应不完整/, custom: /HTTP 401/ } },
 ];
 
-test('pinned Jev 0.3.5 native and custom services drive workflows and durable review records', { timeout: 20_000 }, async t => {
-  assert.equal(jevPackage.version, '0.3.5');
+test('pinned Jev 0.3.6 native and custom services drive workflows and durable review records', { timeout: 20_000 }, async t => {
+  assert.equal(jevPackage.version, '0.3.6');
   const ctx = new Context(), directory = await mkdtemp(join(tmpdir(), 'dmc-jev-workflow-'));
   let scenario, nativeRequest, customRequest, nativeCalls = 0, customCalls = 0;
   try {

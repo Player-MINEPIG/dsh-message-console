@@ -30,13 +30,19 @@ npm run demo
 
 ## DSH 开发安装
 
-先在隔离的开发 profile 验证。需要已启用的 DSH Agent/会话持久化/Web 服务、标准 `dsh-prompt-assembler` 1.1.1（[固定提交 `003e73f`](https://github.com/Player-MINEPIG/dsh-prompt-assembler/commit/003e73f713d7289033a3f69533d95cb19a1d259e)），以及用户 Jev fork 0.3.5（[固定提交 `4ab0a1d`](https://github.com/Player-MINEPIG/dsh-jev-plugin/commit/4ab0a1de28cd92958d061a1b733581f10d7c2a5d)）。安装 npm 依赖本身不等于在宿主中启用了对应服务。已有 Assembler 或 Jev 时更新并复用同一个实例，消息插件只调用共享的 `decisionModels.ask`，不另存 Jev URL 或密钥。
+先在隔离的开发 profile 验证。需要已启用的 DSH Agent/会话持久化/Web 服务、标准 `dsh-prompt-assembler` 精确版本 1.1.1（[发布标签 `v1.1.1`](https://github.com/Player-MINEPIG/dsh-prompt-assembler/tree/v1.1.1)，提交 `f757ae75659e4d78cee46ab022987da6cf82fe94`），以及用户 Jev fork 0.3.6（[固定提交 `2ec0510`](https://github.com/Player-MINEPIG/dsh-jev-plugin/commit/2ec0510ffcdabe790df8c93b0b40aee07b93c342)）。
+
+安装 npm 依赖本身不等于在宿主中启用了对应服务。
+
+Assembler 1.1.1 从“插件 → 已安装插件 → dsh-prompt-assembler → 配置当前会话”打开装配编辑器。控制台使用标准 native 后端，不需要核心扩展。本次由同版本的旧源码提交 `003e73f` 更新至上述正式发布包，lockfile 固定 npm 包的完整性摘要。
+
+已有 Assembler 或 Jev 时更新并复用同一个实例，消息插件只调用共享的 `decisionModels.ask`，不另存 Jev URL 或密钥。
 
 ```sh
 npm run build
 npm pack --pack-destination .local
-dsh plugin --profile YOUR_DEV_PROFILE add "dsh-prompt-assembler@https://codeload.github.com/Player-MINEPIG/dsh-prompt-assembler/tar.gz/003e73f713d7289033a3f69533d95cb19a1d259e"
-dsh plugin --profile YOUR_DEV_PROFILE add "dsh-jev-plugin@https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/4ab0a1de28cd92958d061a1b733581f10d7c2a5d"
+dsh plugin --profile YOUR_DEV_PROFILE add "dsh-prompt-assembler@1.1.1"
+dsh plugin --profile YOUR_DEV_PROFILE add "dsh-jev-plugin@https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/2ec0510ffcdabe790df8c93b0b40aee07b93c342"
 dsh plugin --profile YOUR_DEV_PROFILE add /absolute/path/to/dsh-message-console/.local/dsh-message-console-0.1.0.tgz
 ```
 
@@ -51,7 +57,7 @@ dsh plugin --profile YOUR_DEV_PROFILE add /absolute/path/to/dsh-message-console/
 
 从 DSH 左侧插件区域打开“看点什么”，在“全局配置”从宿主目录选择提供商与模型，在“添加来源”绑定已有工作区。`dsh-plugin-subscriptions` 通过宿主 LLM 提供商接口复用，不单独保存供应商凭据。Jev profile 不配置时使用 Jev 默认 profile；若其输出只有选项而无完整概率，插件会记录失败，不冒充获得置信度。
 
-Jev fork 0.3.5 的 native 普通模型和 custom 路径均已用合成输入验证完整概率、低置信升级、失败记录和人工审核边界。native 的概率是模型自报估计，不是 token 概率或经过校准的置信度；阈值仍需真实样本验证。工作记录保留 Jev 返回的 profile、model、answers 和 usage，不推测服务未提供的概率来源 metadata。未使用真实 Jev 凭据。订阅提供商仍由宿主目录接入，但第三方提供商插件也必须兼容该宿主。`dsh-plugin-subscriptions` 0.9.9 的 peer 声明尚不包含 `0.2.1-rc.2`，本轮未验证其真实订阅调用，不应强行跳过依赖检查。
+Jev fork 0.3.6 的 native 普通模型和 custom 路径均已用合成输入验证完整概率、低置信升级、失败记录和人工审核边界。native 的概率是模型自报估计，不是 token 概率或经过校准的置信度；阈值仍需真实样本验证。工作记录保留 Jev 返回的 profile、model、answers 和 usage，不推测服务未提供的概率来源 metadata。未使用真实 Jev 凭据。订阅提供商仍由宿主目录接入，但第三方提供商插件也必须兼容该宿主。`dsh-plugin-subscriptions` 0.9.9 的 peer 声明尚不包含 `0.2.1-rc.2`，本轮未验证其真实订阅调用，不应强行跳过依赖检查。
 
 工作模型和监督模型可以使用不同 provider/model；即便使用同一模型，也分别创建独立会话。任务插件不是依赖；Memory Manager 不作为硬依赖。
 
