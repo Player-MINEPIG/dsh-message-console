@@ -41,7 +41,7 @@ export function assembleInput(source, item = null, { language, stage = 'generati
     materials: [...sharedMaterials, ...scopedMaterials.map(material => ({ ...material, scope: stage }))],
     content: contentInput(item),
   };
-  return { stage, blocks: validateInputOrder(source.inputOrder).map(key => ({ key, label: INPUT_BLOCKS[key], value: values[key] })), ...(source.contextVersion ? { contextVersion: source.contextVersion } : {}), ...(language ? { language } : {}) };
+  return { stage, blocks: validateInputOrder(source.inputOrder).map(key => ({ key, label: INPUT_BLOCKS[key], value: values[key] })), ...(source.learningGuidance ? { learningGuidance: source.learningGuidance } : {}), ...(source.contextVersion ? { contextVersion: source.contextVersion } : {}), ...(language ? { language } : {}) };
 }
 
 export function serializeInput(input, extras = {}) {

@@ -23,7 +23,9 @@ function createHandler(service, admission) {
       const path = url.pathname.slice(ROOT.length).split("/").filter(Boolean).map(decodeURIComponent), key = path.join("/"), query = Object.fromEntries(url.searchParams);
       if (req.method === "GET") {
         let result2;
-        if (key === "overview") result2 = service.overview(query);
+        if (key === "learning") result2 = service.learningList(query);
+        else if (path[0] === "learning" && path.length === 2) result2 = service.learning(path[1]);
+        else if (key === "overview") result2 = service.overview(query);
         else if (key === "session-directory") result2 = service.sessionDirectory(query);
         else if (key === "catalog") result2 = await service.catalog();
         else if (path[0] === "catalog" && path[1] === "models" && path.length === 3) result2 = await service.models(path[2]);
@@ -34,7 +36,8 @@ function createHandler(service, admission) {
         else if (path[0] === "sources" && path[2] === "items" && path.length === 3) result2 = service.items(path[1], query);
         else if (path[0] === "items" && path.length === 2) result2 = service.item(path[1], query.version);
         else if (path[0] === "items" && path.length === 3) {
-          if (path[2] === "content") result2 = service.content(path[1], query);
+          if (path[2] === "feedback") result2 = service.feedback(path[1]);
+          else if (path[2] === "content") result2 = service.content(path[1], query);
           else if (path[2] === "comments") result2 = service.comments(path[1], query.version, query);
           else if (["runs", "drafts", "versions"].includes(path[2])) result2 = service[path[2]](path[1], query);
           else return send(404, { error: "路径不存在" });
@@ -46,13 +49,19 @@ function createHandler(service, admission) {
       if (req.headers["x-dsh-message-console"] !== "1" || !req.headers["content-type"]?.startsWith("application/json")) return send(403, { error: "请求来源校验失败" });
       const body = await jsonBody(req);
       let result = { ok: true };
-      if (key === "settings") await service.configure(body);
+      if (key === "read-all") result = service.markAllRead(body);
+      else if (key === "learning") result = await service.startLearning(body);
+      else if (path[0] === "learning" && path.length === 3 && path[2] === "apply") result = await service.applyLearning(path[1], body);
+      else if (path[0] === "learning" && path.length === 3 && path[2] === "reject") result = service.rejectLearning(path[1], body);
+      else if (path[0] === "learning" && path.length === 3 && path[2] === "retry") result = service.retryLearning(path[1]);
+      else if (key === "settings") await service.configure(body);
       else if (key === "sources/suggest") result = await service.suggestSource(body);
       else if (key === "sources/preview") result = await service.previewInput(body);
       else if (path[0] === "sources" && path.length === 1) result = await service.saveSource(body);
       else if (path[0] === "sources" && path.length === 2) result = await service.saveSource(body, path[1]);
       else if (path[0] === "sources" && path[2] === "refresh" && path.length === 3) result = await service.refresh(path[1]);
       else if (path[0] === "sources" && path[2] === "organize" && path.length === 3) result = await service.organize(path[1], { scope: "history" });
+      else if (path[0] === "items" && path[2] === "feedback" && path.length === 3) result = service.saveFeedback(path[1], body);
       else if (path[0] === "items" && path[2] === "read" && path.length === 3) await service.markRead(path[1], body.version);
       else if (path[0] === "items" && path[2] === "handling" && path.length === 3) await service.setHandling(path[1], body.handling);
       else if (path[0] === "items" && path[2] === "conversation" && path.length === 3) result = await service.openConversation(path[1]);

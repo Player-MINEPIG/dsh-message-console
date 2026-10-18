@@ -2,6 +2,7 @@ import { mkdir, open, readFile, unlink, rmdir, copyFile, chmod } from "node:fs/p
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { learningHash, proposalChanges } from "./learning.js";
 import { itemPriority, currentAnalysis, needsHandling } from "./dashboard.js";
 const json = (value) => JSON.stringify(value ?? null);
 const parse = (value) => value ? JSON.parse(value) : null;
@@ -91,7 +92,7 @@ class Store {
       this.#db.function("dmc_lower", { deterministic: true }, (value) => String(value ?? "").toLowerCase());
       await chmod(filename, 384);
       const schemaVersion = this.#get("PRAGMA user_version").user_version;
-      if (![0, 2, 3, 4].includes(schemaVersion)) throw new Error("不支持此数据库版本");
+      if (![0, 2, 3, 4, 5].includes(schemaVersion)) throw new Error("不支持此数据库版本");
       this.#db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         INSERT OR IGNORE INTO meta VALUES('revision','0');
@@ -117,6 +118,16 @@ class Store {
         CREATE INDEX IF NOT EXISTS session_changes ON sessions(seq);
         CREATE INDEX IF NOT EXISTS session_item ON sessions(item_id,role);
         CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,operation_key TEXT NOT NULL,request_hash TEXT NOT NULL,data TEXT NOT NULL,UNIQUE(session_id,operation_key));
+        CREATE TABLE IF NOT EXISTS feedback_versions(id TEXT PRIMARY KEY,item_id TEXT NOT NULL REFERENCES items(id),source_id TEXT NOT NULL REFERENCES sources(id),revision INTEGER NOT NULL,text TEXT NOT NULL,data TEXT NOT NULL,UNIQUE(item_id,revision));
+        CREATE INDEX IF NOT EXISTS feedback_source ON feedback_versions(source_id,item_id,revision DESC);
+        CREATE TABLE IF NOT EXISTS learning_batches(id TEXT PRIMARY KEY,source_id TEXT NOT NULL REFERENCES sources(id),status TEXT NOT NULL,created_at TEXT NOT NULL,data TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS learning_source ON learning_batches(source_id,created_at DESC,id);
+        CREATE TABLE IF NOT EXISTS learning_cases(id TEXT PRIMARY KEY,batch_id TEXT NOT NULL REFERENCES learning_batches(id),feedback_id TEXT NOT NULL REFERENCES feedback_versions(id),data TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS learning_case_batch ON learning_cases(batch_id,id);
+        CREATE INDEX IF NOT EXISTS learning_case_feedback ON learning_cases(feedback_id,batch_id);
+        CREATE TABLE IF NOT EXISTS learning_proposals(batch_id TEXT NOT NULL REFERENCES learning_batches(id),revision INTEGER NOT NULL,hash TEXT NOT NULL,status TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(batch_id,revision));
+        CREATE TABLE IF NOT EXISTS learned_feedback(feedback_id TEXT PRIMARY KEY REFERENCES feedback_versions(id),batch_id TEXT NOT NULL REFERENCES learning_batches(id),proposal_revision INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS learning_receipts(session_id TEXT NOT NULL,operation_key TEXT NOT NULL,request_hash TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(session_id,operation_key));
         CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY,at TEXT,event TEXT,data TEXT NOT NULL);
         `);
       this.#transaction(() => {
@@ -125,7 +136,8 @@ class Store {
           this.#run(`UPDATE item_versions SET metadata=json_object('contextComplete',json_extract(payload,'$.contextComplete'),'contextLimit',json_extract(payload,'$.contextLimit'),'diffLength',coalesce(length(json_extract(payload,'$.diff')),0),'video',CASE WHEN json_type(payload,'$.video')='object' THEN json_object('title',json_extract(payload,'$.video.title'),'owner',json_extract(payload,'$.video.owner'),'descriptionLength',coalesce(length(json_extract(payload,'$.video.description')),0)) ELSE NULL END)`);
         }
         if(schemaVersion===3)this.#run(`UPDATE item_versions SET metadata=CASE WHEN json_type(metadata,'$.video')='object' THEN json_set(metadata,'$.diffLength',coalesce(length(json_extract(payload,'$.diff')),0),'$.video.descriptionLength',coalesce(length(json_extract(payload,'$.video.description')),0)) ELSE json_set(metadata,'$.diffLength',coalesce(length(json_extract(payload,'$.diff')),0)) END`);
-        this.#db.exec("PRAGMA user_version=4");
+        for (const column of ["attention_version", "acknowledged_attention_version"]) if (!this.#all("PRAGMA table_info(items)").some(entry => entry.name === column)) this.#db.exec(`ALTER TABLE items ADD COLUMN ${column} INTEGER NOT NULL DEFAULT ${column === "attention_version" ? 1 : 0}`);
+        this.#db.exec("PRAGMA user_version=5");
       });
       if (!this.#get("SELECT value FROM meta WHERE key='initialized'")) {
         let legacy;
@@ -147,6 +159,7 @@ class Store {
         });
       }
       this.#transaction(() => {
+        for (const row of this.#all("SELECT id,data FROM learning_batches WHERE status IN ('queued','running')")) this.#writeLearning({ ...parse(row.data), status: "interrupted", error: "进程中断，可重试本批评价整理。" });
         for (const row of this.#all("SELECT id FROM drafts WHERE status='sending'")) this.#updateDraft(row.id, { status: "unknown", error: "上次发送被中断，需核实远端结果。" });
         for (const row of this.#all("SELECT id FROM runs WHERE status='running'")) {
           const run = this.run(row.id);
@@ -218,7 +231,11 @@ class Store {
     return parse(this.#get("SELECT value FROM meta WHERE key='settings'").value);
   }
   configure(settings) {
-    return this.#transaction(() => this.#run("UPDATE meta SET value=? WHERE key='settings'", json(settings)));
+    return this.#transaction(() => {
+      const old = this.settings();
+      this.#run("UPDATE meta SET value=? WHERE key='settings'", json(settings));
+      if ((old.learningGuidance ?? "") !== (settings.learningGuidance ?? "")) this.#invalidateGlobalGuidance(settings);
+    });
   }
   source(id) {
     return parse(this.#get("SELECT data FROM sources WHERE id=?", id)?.data);
@@ -233,16 +250,23 @@ class Store {
       const saved = { ...source, revision: (old?.revision ?? 0) + 1 };
       delete saved.expectedRevision;
       this.#run("INSERT INTO sources(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", saved.id, json(saved));
-      if (old && old.contextVersion !== saved.contextVersion) {
-        for (const row of this.#all("SELECT id FROM drafts WHERE source_id=? AND status IN ('pending-supervision','ready','blocked')", saved.id)) this.#updateDraft(row.id, { status: "stale" });
-        for (const row of this.#all("SELECT id FROM items WHERE source_id=? AND analysis IS NOT NULL", saved.id)) {
-          this.#run("UPDATE items SET analyzed_version=NULL WHERE id=?", row.id);
-          this.#project(row.id);
-        }
-      }
+      if (old && old.contextVersion !== saved.contextVersion) this.#invalidateSource(saved.id);
       this.#audit("source.saved", { sourceId: saved.id });
       return saved;
     });
+  }
+  #invalidateGlobalGuidance(settings) {
+    for (const source of this.sources()) if (!Object.hasOwn(source.settings ?? {}, "learningGuidance")) {
+      this.#run("UPDATE sources SET data=? WHERE id=?", json({ ...source, revision: (source.revision ?? 0) + 1, contextVersion: learningHash({ previous: source.contextVersion, learningGuidance: settings.learningGuidance ?? "" }) }), source.id);
+      this.#invalidateSource(source.id);
+    }
+  }
+  #invalidateSource(id) {
+    for (const row of this.#all("SELECT id FROM drafts WHERE source_id=? AND status IN ('pending-supervision','ready','blocked')", id)) this.#updateDraft(row.id, { status: "stale" });
+    for (const row of this.#all("SELECT id FROM items WHERE source_id=? AND analysis IS NOT NULL", id)) {
+      this.#run("UPDATE items SET analyzed_version=NULL WHERE id=?", row.id);
+      this.#project(row.id);
+    }
   }
   updateSource(id, change) {
     return this.#transaction(() => {
@@ -268,7 +292,7 @@ class Store {
     return this.#get("SELECT * FROM items WHERE id=?", id);
   }
   #itemState(row) {
-    return { ...parse(row.data), id: row.id, sourceId: row.source_id, remoteId: row.remote_id, kind: row.kind, version: row.version, readVersion: row.read_version, analyzedVersion: row.analyzed_version, analyzedContextVersion: row.context_version, handling: row.handling, changedAt: row.changed_at, analysis: parse(row.analysis), analysisRevision: row.analysis_revision };
+    return { ...parse(row.data), id: row.id, sourceId: row.source_id, remoteId: row.remote_id, kind: row.kind, version: row.version, readVersion: row.read_version, analyzedVersion: row.analyzed_version, analyzedContextVersion: row.context_version, handling: row.handling, changedAt: row.changed_at, analysis: parse(row.analysis), analysisRevision: row.analysis_revision, attentionVersion: row.attention_version, acknowledgedAttentionVersion: row.acknowledged_attention_version, attentionAcknowledged: row.attention_version === row.acknowledged_attention_version };
   }
   item(id, version) {
     const row = this.#itemRow(id);
@@ -281,7 +305,7 @@ class Store {
   }
   #project(id) {
     const row = required(this.#itemRow(id), "内容项"), item = this.#itemState(row), drafts = this.#all(`SELECT status,item_id FROM drafts WHERE item_id=? AND status IN (${active.map(() => "?").join(",")})`, id, ...active).map((d) => ({ itemId: d.item_id, status: d.status }));
-    const handling = Number(needsHandling(item, drafts) || drafts.some((d) => d.status === "pending-supervision")), unread = Number(item.readVersion !== item.version), analyzed = Number(Boolean(currentAnalysis(item))), priority = itemPriority(item);
+    const handling = item.attentionAcknowledged ? 0 : Number(needsHandling(item, drafts) || drafts.some((d) => d.status === "pending-supervision")), unread = Number(item.readVersion !== item.version), analyzed = Number(Boolean(currentAnalysis(item))), priority = item.attentionAcknowledged ? 0 : itemPriority(item);
     this.#run("UPDATE items SET priority=?,needs_handling=?,unread=?,analyzed=? WHERE id=?", priority, handling, unread, analyzed, id);
     this.#run("UPDATE sources SET total=total+?,unread=unread+?,handling=handling+?,analyzed=analyzed+?,unorganized=unorganized+? WHERE id=?", 0, unread - row.unread, handling - row.needs_handling, analyzed - row.analyzed, unread * (1 - analyzed) - row.unread * (1 - row.analyzed), row.source_id);
   }
@@ -296,6 +320,7 @@ class Store {
         if (old?.version === version) continue;
         const item = { ...old ? this.#itemState(old) : {}, ...entry, id, sourceId, version, previous: old ? { version: old.version } : null, readVersion: old?.read_version ?? (!source.initialized ? version : null), analyzedVersion: old?.analyzed_version ?? (!source.initialized ? version : null), handling: old?.handling ?? "none", changedAt: at };
         this.#writeItem(item);
+        if (old) this.#run("UPDATE items SET attention_version=attention_version+1 WHERE id=?", id);
         this.#version(item, true);
         if (!old) this.#countNew(sourceId);
         for (const d of this.#all("SELECT id FROM drafts WHERE item_id=? AND status IN ('pending-supervision','ready','blocked')", id)) this.#updateDraft(d.id, { status: "stale" });
@@ -315,8 +340,20 @@ class Store {
   handling(id, handling) {
     return this.#transaction(() => {
       required(this.#itemRow(id), "内容项");
-      this.#run("UPDATE items SET handling=? WHERE id=?", handling, id);
+      this.#run("UPDATE items SET handling=?,attention_version=attention_version+? WHERE id=?", handling, ["pending", "later"].includes(handling) ? 1 : 0, id);
       this.#project(id);
+    });
+  }
+  markAllRead(sourceId) {
+    return this.#transaction(() => {
+      if (sourceId) required(this.source(sourceId), "来源");
+      const rows = this.#all(`SELECT id FROM items ${sourceId ? "WHERE source_id=?" : ""}`, ...sourceId ? [sourceId] : []);
+      for (const row of rows) {
+        this.#run("UPDATE items SET read_version=version,acknowledged_attention_version=attention_version WHERE id=?", row.id);
+        this.#project(row.id);
+      }
+      this.#audit("items.read-all", { sourceId: sourceId ?? null, count: rows.length });
+      return { count: rows.length };
     });
   }
   #page(countSql, selectSql, args, input) {
@@ -425,9 +462,11 @@ class Store {
     return parse(required(this.#get("SELECT decision FROM runs WHERE id=?", id), "运行记录").decision);
   }
   #writeDraft(draft) {
+    const old = this.#get("SELECT status FROM drafts WHERE id=?", draft.id);
     const data = { ...draft, bodyHash: createHash("sha256").update(json(draft.body)).digest("hex") };
     delete data.body;
     this.#run("INSERT INTO drafts VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data", draft.id, draft.itemId, draft.sourceId, draft.status, draft.body, draft.createdAt ?? (/* @__PURE__ */ new Date()).toISOString(), json(data));
+    if (!old || old.status !== draft.status && ["pending-supervision", "ready", "blocked"].includes(draft.status)) this.#run("UPDATE items SET attention_version=attention_version+1 WHERE id=?", draft.itemId);
   }
   draft(id) {
     const row = this.#get("SELECT * FROM drafts WHERE id=?", id);
@@ -512,7 +551,7 @@ class Store {
     const row = required(this.#itemRow(run.itemId), "内容项"), source = this.source(row.source_id);
     const valid = row.version === run.version && source.contextVersion === run.sourceContextVersion && source.workspaceId === run.workspaceId && row.analysis_revision === (run.baseAnalysisRevision ?? row.analysis_revision);
     if (valid) {
-      this.#run("UPDATE items SET analysis=?,analyzed_version=?,context_version=?,analysis_revision=analysis_revision+1,handling=CASE WHEN handling='none' AND ?='human' THEN 'pending' ELSE handling END WHERE id=?", json(result), run.version, run.contextVersion, result.intervention ?? "none", run.itemId);
+      this.#run("UPDATE items SET analysis=?,analyzed_version=?,context_version=?,analysis_revision=analysis_revision+1,attention_version=attention_version+1,handling=CASE WHEN handling='none' AND ?='human' THEN 'pending' ELSE handling END WHERE id=?", json(result), run.version, run.contextVersion, result.intervention ?? "none", run.itemId);
       this.#project(run.itemId);
     }
     return valid;
@@ -595,6 +634,160 @@ class Store {
     return this.#transaction(() => {
       this.#updateDraft(id, change);
       this.#audit(event, { draftId: id, ...detail }, at);
+    });
+  }
+  feedback(itemId) {
+    required(this.#itemRow(itemId), "内容项");
+    const row = this.#get("SELECT f.*,l.feedback_id learned FROM feedback_versions f LEFT JOIN learned_feedback l ON l.feedback_id=f.id WHERE f.item_id=? ORDER BY revision DESC LIMIT 1", itemId);
+    if (!row) return { itemId, revision: 0, text: "", learned: false };
+    const { decisionSnapshot, ...data } = parse(row.data);
+    return { ...data, learned: Boolean(row.learned) };
+  }
+  saveFeedback(itemId, input, at) {
+    return this.#transaction(() => {
+      const item = required(this.#itemRow(itemId), "内容项"), old = this.feedback(itemId);
+      if (old.revision !== input.expectedRevision) throw new Error("评价已变化，请刷新后保存");
+      if (item.version !== input.itemVersion || item.analysis_revision !== input.analysisRevision) throw new Error("内容或分析已更新，请刷新后评价");
+      const visibleAnalysis = currentAnalysis(this.#itemState(item));
+      const run = visibleAnalysis ? this.#get("SELECT id,decision FROM runs WHERE item_id=? AND json_extract(data,'$.version')=? AND json_extract(data,'$.resultAdopted')=1 AND json_extract(data,'$.baseAnalysisRevision')=? ORDER BY started_at DESC,id DESC LIMIT 1", itemId, item.version, item.analysis_revision - 1) : null;
+      const feedback = { id: randomUUID(), itemId, sourceId: item.source_id, revision: old.revision + 1, text: input.text, itemVersion: item.version, analysisRevision: item.analysis_revision, analysisSnapshot: visibleAnalysis, runId: run?.id ?? null, decisionSnapshot: parse(run?.decision), updatedAt: at };
+      this.#run("INSERT INTO feedback_versions VALUES(?,?,?,?,?,?)", feedback.id, itemId, item.source_id, feedback.revision, feedback.text, json(feedback));
+      this.#audit("feedback.saved", { feedbackId: feedback.id, itemId, revision: feedback.revision }, at);
+      return this.feedback(itemId);
+    });
+  }
+  #unlearned(sourceId, limit) {
+    const where = `f.text<>'' AND f.revision=(SELECT max(current.revision) FROM feedback_versions current WHERE current.item_id=f.item_id) AND NOT EXISTS(SELECT 1 FROM learned_feedback l WHERE l.feedback_id=f.id) ${sourceId ? "AND f.source_id=?" : ""}`;
+    const args = sourceId ? [sourceId] : [];
+    if (limit) return this.#all(`SELECT f.* FROM feedback_versions f WHERE ${where} ORDER BY EXISTS(SELECT 1 FROM learning_cases c WHERE c.feedback_id=f.id),coalesce((SELECT max(b.created_at) FROM learning_cases c JOIN learning_batches b ON b.id=c.batch_id WHERE c.feedback_id=f.id),''),f.rowid DESC LIMIT ?`, ...args, limit);
+    return this.#get(`SELECT count(*) n FROM feedback_versions f WHERE ${where}`, ...args).n;
+  }
+  #writeLearning(batch) {
+    const { cases, proposal, ...data } = batch;
+    this.#run("INSERT INTO learning_batches VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data", batch.id, batch.sourceId, batch.status, batch.createdAt, json(data));
+  }
+  createLearning(batch) {
+    return this.#transaction(() => {
+      const current = required(this.source(batch.sourceId), "来源");
+      if (current.revision !== batch.baseSourceRevision || learningHash(this.settings()) !== batch.baseSettingsHash) throw new Error("来源或全局配置已变化，请重试");
+      const existing = this.#get("SELECT id FROM learning_batches WHERE source_id=? AND status IN ('queued','running','pending') ORDER BY created_at DESC LIMIT 1", batch.sourceId);
+      if (existing) return this.learning(existing.id);
+      const rows = this.#unlearned(batch.sourceId, 50), remainingCount = Math.max(0, this.#unlearned(batch.sourceId) - rows.length);
+      if (!rows.length) throw new Error("此来源没有尚未学习的用户评价");
+      const saved = { ...batch, status: "queued", caseCount: rows.length, remainingCount, sessionId: null };
+      this.#writeLearning(saved);
+      for (const row of rows) {
+        const feedback = parse(row.data), item = this.header(feedback.itemId, feedback.itemVersion), entry = { id: randomUUID(), feedbackId: row.id, feedbackRevision: row.revision, itemId: feedback.itemId, itemVersion: feedback.itemVersion, analysisRevision: feedback.analysisRevision, title: item.title, url: item.url, text: feedback.text, analysisSnapshot: feedback.analysisSnapshot, runId: feedback.runId, decisionSnapshot: feedback.decisionSnapshot, updatedAt: feedback.updatedAt };
+        this.#run("INSERT INTO learning_cases VALUES(?,?,?,?)", entry.id, saved.id, row.id, json(entry));
+      }
+      this.#audit("learning.created", { batchId: saved.id, sourceId: saved.sourceId, caseCount: rows.length }, saved.createdAt);
+      return this.learning(saved.id);
+    });
+  }
+  learning(id) {
+    const row = this.#get("SELECT data FROM learning_batches WHERE id=?", id);
+    if (!row) return null;
+    const cases = this.#all("SELECT data FROM learning_cases WHERE batch_id=? ORDER BY rowid", id).map(row => { const { decisionSnapshot, ...data } = parse(row.data); return { ...data, hasDecision: Boolean(decisionSnapshot) }; });
+    const proposal = parse(this.#get("SELECT data FROM learning_proposals WHERE batch_id=? ORDER BY revision DESC LIMIT 1", id)?.data);
+    return { ...parse(row.data), batchId: id, cases, proposal };
+  }
+  learningDecision(id, caseId) {
+    const entry = parse(required(this.#get("SELECT data FROM learning_cases WHERE batch_id=? AND id=?", id, caseId), "批次案例").data);
+    return entry.decisionSnapshot;
+  }
+  learningList(sourceId, input = {}) {
+    if (sourceId) required(this.source(sourceId), "来源");
+    const where = sourceId ? "WHERE source_id=?" : "", args = sourceId ? [sourceId] : [];
+    const page = this.#page(`SELECT count(*) n FROM learning_batches ${where}`, `SELECT data FROM learning_batches ${where} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?`, args, input);
+    page.items = page.items.map(row => { const { sourceSnapshot, preparedSource, settingsSnapshot, effectiveSettings, ...value } = parse(row.data); return { ...value, batchId: value.id }; });
+    return { ...page, unlearnedCount: this.#unlearned(sourceId) };
+  }
+  updateLearning(id, change) {
+    return this.#transaction(() => {
+      const batch = required(this.learning(id), "学习批次");
+      this.#writeLearning({ ...batch, ...change });
+      return this.learning(id);
+    });
+  }
+  bindLearningSession(binding) {
+    return this.#transaction(() => {
+      const batch = required(this.learning(binding.batchId), "学习批次"), old = this.sessionBinding(binding.sessionId);
+      if (old) {
+        if (old.batchId !== batch.id || old.role !== "learning" || old.cwd !== binding.cwd) throw new Error("学习会话绑定冲突");
+        return old;
+      }
+      if (batch.workspaceId !== binding.workspaceId || !["queued", "running"].includes(batch.status)) throw new Error("学习批次不能建立会话");
+      const value = { ...binding, role: "learning", sourceId: batch.sourceId, learningBatchId: batch.id, at: new Date().toISOString() };
+      this.#run("INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?,?,?)", binding.sessionId, null, null, batch.sourceId, "learning", binding.workspaceId, binding.cwd, json(value), 1, this.#sessionSequence());
+      this.#writeLearning({ ...batch, sessionId: binding.sessionId, status: "running" });
+      return value;
+    });
+  }
+  learningSubmission(sessionId) {
+    return parse(this.#get("SELECT data FROM learning_receipts WHERE session_id=? ORDER BY rowid DESC LIMIT 1", sessionId)?.data);
+  }
+  proposeLearning(binding, submission, callId, at) {
+    return this.#transaction(() => {
+      const old = this.#get("SELECT request_hash,data FROM learning_receipts WHERE session_id=? AND operation_key=?", binding.sessionId, submission.operationKey);
+      if (old) {
+        if (old.request_hash !== learningHash(submission)) throw new Error("相同操作键提交了不同建议");
+        return parse(old.data);
+      }
+      const batch = required(this.learning(binding.batchId), "学习批次");
+      if (batch.sessionId !== binding.sessionId || !["queued", "running", "pending", "no-suggestions"].includes(batch.status)) throw new Error("此批次不能提交学习建议");
+      const changes = proposalChanges(submission, batch), revision = (batch.proposal?.revision ?? 0) + 1;
+      const proposal = { revision, summary: submission.summary.trim(), changes, caseIds: [...new Set(changes.flatMap(change => change.caseIds))], status: changes.length ? "pending" : "no-suggestions", createdAt: at };
+      proposal.hash = learningHash(proposal);
+      this.#run("INSERT INTO learning_proposals VALUES(?,?,?,?,?)", batch.id, revision, proposal.hash, proposal.status, json(proposal));
+      this.#writeLearning({ ...batch, status: proposal.status, error: null });
+      const receipt = { batchId: batch.id, sessionId: binding.sessionId, proposalRevision: revision, proposalHash: proposal.hash, proposal };
+      this.#run("INSERT INTO learning_receipts VALUES(?,?,?,?)", binding.sessionId, submission.operationKey, learningHash(submission), json(receipt));
+      this.#audit("learning.proposed", { batchId: batch.id, sessionId: binding.sessionId, callId, revision }, at);
+      return receipt;
+    });
+  }
+  applyLearning(id, expected, { source, settings }, at) {
+    return this.#transaction(() => {
+      const batch = required(this.learning(id), "学习批次"), proposal = required(batch.proposal, "学习建议");
+      if (proposal.revision !== expected.proposalRevision || proposal.hash !== expected.proposalHash) throw new Error("学习建议已变化，请重新查看");
+      if (proposal.status === "applied") return proposal.receipt;
+      if (proposal.status !== "pending" || !proposal.changes.length) throw new Error("此建议不能应用");
+      const current = required(this.source(batch.sourceId), "来源");
+      if (current.revision !== batch.baseSourceRevision || learningHash(this.settings()) !== batch.baseSettingsHash) throw new Error("来源或全局配置已变化，请重新整理建议");
+      for (const entry of batch.cases.filter(entry => proposal.caseIds.includes(entry.id))) {
+        const latest = this.#get("SELECT id,text FROM feedback_versions WHERE item_id=? ORDER BY revision DESC LIMIT 1", entry.itemId);
+        if (latest?.id !== entry.feedbackId || !latest.text.trim() || this.#get("SELECT 1 FROM learned_feedback WHERE feedback_id=?", entry.feedbackId)) throw new Error("案例评价已修改或撤回，请重新整理建议");
+      }
+      const sourceChanged = proposal.changes.some(change => change.target === "source"), globalChanged = proposal.changes.some(change => change.target === "global");
+      if (sourceChanged) {
+        const saved = { ...current, ...source, revision: (current.revision ?? 0) + 1 };
+        this.#run("UPDATE sources SET data=? WHERE id=?", json(saved), batch.sourceId);
+        this.#invalidateSource(batch.sourceId);
+      }
+      if (globalChanged) {
+        this.#run("UPDATE meta SET value=? WHERE key='settings'", json(settings));
+        this.#invalidateGlobalGuidance(settings);
+      }
+      const covered = batch.cases.filter(entry => proposal.caseIds.includes(entry.id));
+      for (const entry of covered) this.#run("INSERT OR IGNORE INTO learned_feedback VALUES(?,?,?)", entry.feedbackId, batch.id, proposal.revision);
+      const receipt = { batchId: id, proposalRevision: proposal.revision, proposalHash: proposal.hash, learnedCount: covered.length, appliedAt: at };
+      const applied = { ...proposal, status: "applied", receipt };
+      this.#run("UPDATE learning_proposals SET status='applied',data=? WHERE batch_id=? AND revision=?", json(applied), id, proposal.revision);
+      this.#writeLearning({ ...batch, status: "applied", appliedAt: at });
+      this.#audit("learning.applied", receipt, at);
+      return receipt;
+    });
+  }
+  rejectLearning(id, expected, at) {
+    return this.#transaction(() => {
+      const batch = required(this.learning(id), "学习批次"), proposal = required(batch.proposal, "学习建议");
+      if (proposal.revision !== expected.proposalRevision || proposal.hash !== expected.proposalHash) throw new Error("学习建议已变化，请重新查看");
+      if (proposal.status === "rejected") return { ok: true };
+      if (proposal.status !== "pending") throw new Error("此建议不能拒绝");
+      this.#run("UPDATE learning_proposals SET status='rejected',data=? WHERE batch_id=? AND revision=?", json({ ...proposal, status: "rejected" }), id, proposal.revision);
+      this.#writeLearning({ ...batch, status: "rejected" });
+      this.#audit("learning.rejected", { batchId: id, revision: proposal.revision }, at);
+      return { ok: true };
     });
   }
   async close() {

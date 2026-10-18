@@ -6,8 +6,8 @@ import { build } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 const directory=await mkdtemp(join(process.cwd(),'.local/ui-test-'));
-await build({stdin:{contents:"export {Dashboard,ItemCard} from './src/dashboard-view.jsx'; export {ListPagination} from './src/ui-shared.jsx'; export {VideoContext} from './src/client.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
-const {Dashboard,ItemCard,ListPagination,VideoContext}=await import(join(directory,'ui.mjs'));
+await build({stdin:{contents:"export {Dashboard,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination} from './src/ui-shared.jsx'; export {VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
+const {Dashboard,ItemCard,ReadAllControl,ListPagination,VideoContext,FeedbackDiff,LearningBatch,FeedbackPanel}=await import(join(directory,'ui.mjs'));
 test.after(()=>rm(directory,{recursive:true,force:true}));
 const render=(Component,props)=>renderToStaticMarkup(React.createElement(Component,props));
 test('overview renders server summaries without any item or draft collection',()=>{
@@ -34,4 +34,38 @@ test('video detail keeps the collected title and a description section without e
   assert.match(html,/已采集视频标题/);assert.match(html,/视频简介/);assert.match(html,/<details open="">/);
   assert.equal(render(VideoContext,{root:'items/example',item:{version:'v1',payload:{}}}),'');
   assert.doesNotMatch(render(VideoContext,{root:'items/example',item:{version:'v1',payload:{video:{title:'无简介视频',descriptionLength:0}}}}),/视频简介/);
+});
+
+test('collapsed card keeps original link outside the detail button and suppresses acknowledged priority',()=>{
+  const item={id:'i',status:'read',title:'一条短评论',url:'https://www.bilibili.com/video/BV1111111111',kind:'comment',excerpt:'谢谢',handling:'none',readVersion:'v1',version:'v1',analyzedVersion:'v1',analysis:{version:'v1',importance:3,urgent:true,reason:'保留当时分析',summary:'原摘要'},attentionAcknowledged:true};
+  const html=render(ItemCard,{item,onSelect(){}});
+  assert.match(html,/展开详情 \/ 查看全文/);assert.match(html,/打开原始来源 ↗/);
+  assert.ok(html.indexOf('</button>')<html.indexOf('<a '));assert.match(html,/target="_blank" rel="noreferrer"/);
+  assert.doesNotMatch(html,/值得关注|有时效要求/);
+  assert.doesNotMatch(render(ItemCard,{item:{...item,url:'javascript:alert(1)'},onSelect(){}}),/<a /);
+});
+
+test('bulk read describes source-wide pagination scope and preservation',()=>{
+  const source=render(ReadAllControl,{sourceId:'s',action(){}}),all=render(ReadAllControl,{action(){}});
+  assert.match(source,/覆盖当前来源所有分页/);assert.match(all,/覆盖全部来源/);
+  for(const html of [source,all]){assert.match(html,/清除当前未读与关注提示/);assert.match(html,/保留草稿、评价和历史/);}
+});
+
+test('feedback diff renders escaped before and after with case references and global scope',()=>{
+  const html=render(FeedbackDiff,{index:0,change:{target:'global',field:'learningGuidance',before:'旧规则',after:'<script>new rule</script>',caseIds:['case-1','case-2']}});
+  assert.match(html,/全局 · 全局学习指导/);assert.match(html,/修改前/);assert.match(html,/旧规则/);assert.match(html,/修改后/);assert.match(html,/&lt;script&gt;/);assert.match(html,/<summary>依据 2 条评价<\/summary>/);assert.match(html,/<summary>技术详情<\/summary>/);assert.doesNotMatch(html,/case-1、case-2/);
+});
+
+test('pending proposals require explicit confirmation and show actual session plus frozen cases',()=>{
+  const batch={id:'b',status:'pending',caseCount:1,remainingCount:12,sessionId:'actual-session',proposal:{status:'pending',summary:'建议减少普通评论关注',revision:1,hash:'h',changes:[{target:'source',field:'attentionRules',before:'旧规则',after:'新规则',caseIds:['c']}]},cases:[{id:'c',title:'谢谢',text:'普通感谢无需关注',itemVersion:'v1',analysisRevision:3,feedbackRevision:2,analysisSnapshot:{summary:'当时摘要'},hasDecision:true,runId:'run-1'}]};
+  const html=render(LearningBatch,{batch,action(){},openSession(){}});
+  assert.match(html,/确认并应用修改/);assert.match(html,/拒绝此提案/);assert.match(html,/本提案只修改当前来源/);assert.match(html,/进入实际学习会话/);assert.match(html,/还有 12 条/);assert.match(html,/普通感谢无需关注/);assert.match(html,/当时摘要/);assert.match(html,/保留 Jev 输入输出引用/);assert.match(html,/案例 1 · 谢谢/);assert.match(html,/<summary>依据 1 条评价<\/summary>/);assert.match(html,/<summary>批次记录<\/summary>/);
+  assert.doesNotMatch(html,/修改已应用/);
+  const applied=render(LearningBatch,{batch:{...batch,status:'applied',proposal:{...batch.proposal,status:'applied'}},action(){},openSession(){}});
+  assert.match(applied,/对应版本的评价已标记为已学习/);assert.doesNotMatch(applied,/确认并应用修改/);
+});
+
+test('learning panel selects a source and explains 50 case batching and explicit application',()=>{
+  const html=render(FeedbackPanel,{sources:[{id:'s',name:'我的视频',platform:'bilibili'}],sourceId:'s',action(){},onBack(){}});
+  assert.match(html,/每次最多整理当前来源的 50 条/);assert.match(html,/应用成功后/);assert.match(html,/我的视频 · 哔哩哔哩/);assert.match(html,/历史学习批次/);
 });

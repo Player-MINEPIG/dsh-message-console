@@ -4,6 +4,7 @@ export const PARAMETERS = {
   fetchHours: { scope: 'common', default: 6, type: 'number', min: 0.25, max: 168 },
   organizeHours: { scope: 'common', default: 6, type: 'number', min: 0.25, max: 168 },
   language: { scope: 'common', default: '中文', type: 'string' },
+  learningGuidance: { scope: 'common', default: '', type: 'string' },
   decisionProfile: { scope: 'reply', default: '', type: 'string' },
   decisionConfidence: { scope: 'reply', default: 0.8, type: 'number', min: 0.5, max: 1 },
   decisionMargin: { scope: 'reply', default: 0.2, type: 'number', min: 0, max: 1 },

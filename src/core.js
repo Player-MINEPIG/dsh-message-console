@@ -1,3 +1,4 @@
+import { learningHash, validateFeedback, applyLearningChanges } from "./learning.js";
 import { assembleInput, serializeInput, validateInputStage, previewExtras } from "./input-assembly.js";
 import { prepareSource, postHistoryText } from "./source-context.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -90,7 +91,7 @@ class ConsoleService {
     this.store.configure(validateSettings(settings));
   }
   async saveSource(input, id) {
-    const valid = validateSource(input), prepared = await prepareSource(valid, await this.workspaces.resolve(valid.workspaceId)), old = id ? required(this.store.source(id), "来源") : null;
+    const valid = validateSource(input), prepared = await this.#prepare(valid), old = id ? required(this.store.source(id), "来源") : null;
     if (old && (old.platform !== valid.platform || old.target !== valid.target || JSON.stringify(old.types) !== JSON.stringify(valid.types))) throw new Error("更换平台、目标或类型请新建来源，以建立独立基线。");
     return this.store.saveSource({ ...old, ...valid, id: id ?? randomUUID(), initialized: old?.initialized ?? false, createdAt: old?.createdAt ?? nowISO(this.clock), contextVersion: prepared.contextVersion, ...input.revision !== void 0 ? { expectedRevision: input.revision } : {} });
   }
@@ -103,9 +104,133 @@ class ConsoleService {
     }
     const item = itemId ? required(this.store.item(itemId), "内容项") : null;
     if (item && (!sourceId || item.sourceId !== sourceId)) throw new Error("只能预览此来源的内容项");
-    const prepared = await prepareSource(valid, await this.workspaces.resolve(valid.workspaceId)), inputData = { ...assembleInput(prepared, item, { language: valuesOf(resolveSettings(this.store.settings(), valid)).language, stage }), ...previewExtras(stage) };
+    const prepared = await this.#prepare(valid), inputData = { ...assembleInput(prepared, item, { language: valuesOf(resolveSettings(this.store.settings(), valid)).language, stage }), ...previewExtras(stage) };
     return { input: inputData, serialized: serializeInput(inputData), postHistory: postHistoryText(prepared), itemId: item?.id ?? null };
   }
+  async #prepare(source, workspace, settings = this.store.settings()) {
+    const learningGuidance = valuesOf(resolveSettings(settings, source)).learningGuidance ?? "";
+    return prepareSource({ ...source, learningGuidance }, workspace ?? await this.workspaces.resolve(source.workspaceId), { learningGuidance });
+  }
+  markAllRead({ sourceId } = {}) {
+    if (sourceId !== void 0 && (typeof sourceId !== "string" || !sourceId)) throw new Error("来源ID无效");
+    return this.store.markAllRead(sourceId);
+  }
+  feedback(itemId) { return this.store.feedback(itemId); }
+  saveFeedback(itemId, input) { return this.store.saveFeedback(itemId, validateFeedback(input), nowISO(this.clock)); }
+  learningList(query = {}) { return this.store.learningList(query.sourceId, query); }
+  learning(id) {
+    const batch = required(this.store.learning(id), "学习批次");
+    const { sourceSnapshot, preparedSource, settingsSnapshot, effectiveSettings, ...view } = batch;
+    return view;
+  }
+  async startLearning({ sourceId } = {}) {
+    const source = required(this.store.source(sourceId), "来源"), settings = this.store.settings(), prepared = await this.#prepare(source, void 0, settings);
+    const batch = this.store.createLearning({ id: randomUUID(), sourceId, workspaceId: source.workspaceId, sourceSnapshot: source, preparedSource: prepared, settingsSnapshot: settings, effectiveSettings: valuesOf(resolveSettings(settings, source)), baseSourceRevision: source.revision, baseSettingsHash: learningHash(settings), baseContextVersion: prepared.contextVersion, createdAt: nowISO(this.clock) });
+    if (batch.status === "queued") this.#launchLearning(batch.id);
+    return this.learning(batch.id);
+  }
+  #launchLearning(id) {
+    const promise = this.#job(`learning:${id}`, async () => {
+      const batch = required(this.store.learning(id), "学习批次"), controller = new AbortController();
+      this.#aborts.add(controller);
+      try {
+        this.store.updateLearning(id, { status: "running", error: null });
+        if (!this.executor.learn) throw new Error("宿主评价学习会话不可用");
+        await this.executor.learn({ batchId: id, source: batch.preparedSource, settings: batch.effectiveSettings, signal: controller.signal, recordSession: sessionId => { const current = this.store.learning(id); if (current.sessionId !== String(sessionId)) throw new Error("学习会话未绑定批次"); } });
+        const current = this.store.learning(id);
+        if (!["pending", "no-suggestions", "applied", "rejected"].includes(current.status)) throw new Error("会话结束但未通过工具保存学习建议");
+      } catch (error) {
+        const current = this.store.learning(id);
+        if (!["pending", "no-suggestions", "applied", "rejected"].includes(current.status)) this.store.updateLearning(id, { status: controller.signal.aborted ? "interrupted" : "failed", error: errorText(error), ...error.sessionFailure ? { failure: error.sessionFailure } : {} });
+      } finally { this.#aborts.delete(controller); }
+    });
+    promise.catch(() => {});
+  }
+  retryLearning(id) {
+    const batch = required(this.store.learning(id), "学习批次");
+    if (!["failed", "interrupted", "no-suggestions"].includes(batch.status)) throw new Error("此批次当前不能重试");
+    const source = required(this.store.source(batch.sourceId), "来源");
+    if (source.workspaceId !== batch.workspaceId) throw new Error("来源工作区已变化，请重新创建批次");
+    this.store.updateLearning(id, { status: "queued", error: null });
+    this.#launchLearning(id);
+    return this.learning(id);
+  }
+  async bindLearningSession(input) {
+    const batch = required(this.store.learning(input.batchId), "学习批次"), source = required(this.store.source(batch.sourceId), "来源"), workspace = await this.workspaces.resolve(batch.workspaceId);
+    if (source.workspaceId !== batch.workspaceId || input.workspaceId !== batch.workspaceId || resolve(input.cwd ?? "") !== resolve(workspace.path)) throw new Error("学习会话工作区不匹配");
+    return this.store.bindLearningSession({ ...input, cwd: workspace.path });
+  }
+  #learningBinding(actor) {
+    const binding = this.#binding(actor.sessionId, actor.actualCwd);
+    if (binding.role !== "learning") throw new Error("仅学习会话可查询或保存学习建议");
+    const batch = required(this.store.learning(binding.batchId), "学习批次"), source = required(this.store.source(batch.sourceId), "来源");
+    if (source.workspaceId !== binding.workspaceId || batch.sessionId !== binding.sessionId) throw new Error("学习会话绑定已失效，请使用当前批次会话");
+    return { binding, batch };
+  }
+  readLearningFromSession(actor, args = {}) {
+    const { batch } = this.#learningBinding(actor), section = args.section ?? "batch";
+    if (section === "batch") return { id: batch.id, sourceId: batch.sourceId, workspaceId: batch.workspaceId, caseCount: batch.caseCount, remainingCount: batch.remainingCount, source: { id: batch.sourceId, name: batch.sourceSnapshot.name, platform: batch.sourceSnapshot.platform, target: batch.sourceSnapshot.target, materials: (batch.sourceSnapshot.materials ?? []).map(({ name, kind }) => ({ name, kind })) }, fields: ["context", "attentionRules", "stageContexts.decision.context", "stageContexts.escalation.context", "stageContexts.generation.context", "stageContexts.supervision.context", "textMaterial", "learningGuidance"], proposal: batch.proposal ? { revision: batch.proposal.revision, hash: batch.proposal.hash, status: batch.proposal.status } : null };
+    if (["configuration", "context", "materials"].includes(section)) {
+      let text;
+      if (section === "configuration") {
+        if (args.target === "global" && args.field === "learningGuidance") text = batch.settingsSnapshot.learningGuidance ?? "";
+        else if (args.target !== "source") throw new Error("配置查询目标无效");
+        else if (["context", "attentionRules"].includes(args.field)) text = batch.sourceSnapshot[args.field] ?? "";
+        else if (/^stageContexts\.(decision|escalation|generation|supervision)\.context$/.test(args.field ?? "")) text = batch.sourceSnapshot.stageContexts?.[args.field.split(".")[1]]?.context ?? "";
+        else if (args.field === "textMaterial") text = (batch.sourceSnapshot.materials ?? []).find(material => material.kind === "text" && material.name === args.materialName)?.text ?? "";
+        else throw new Error("配置查询字段无效");
+      } else {
+        if (args.stage !== undefined && !["decision", "escalation", "generation", "supervision"].includes(args.stage)) throw new Error("资料阶段无效");
+        const context = args.stage ? batch.preparedSource.resolvedStageContexts?.[args.stage] : { context: batch.preparedSource.context, materials: batch.preparedSource.resolvedMaterials };
+        if (section === "context") text = context?.context ?? "";
+        else if (!args.materialName) return { materials: (context?.materials ?? []).map(({ name, sha256 }) => ({ name, sha256 })) };
+        else text = required((context?.materials ?? []).find(material => material.name === args.materialName), "冻结资料").text;
+      }
+      return this.#learningChunk(text, args);
+    }
+    if (section === "proposal") return batch.proposal;
+    if (section === "cases") {
+      const page = Number(args.page ?? 1), pageSize = Number(args.pageSize ?? 10);
+      if (!Number.isSafeInteger(page) || page < 1 || ![10, 20, 50].includes(pageSize)) throw new Error("分页参数无效");
+      return { items: batch.cases.slice((page - 1) * pageSize, page * pageSize), page, pageSize, total: batch.cases.length, pageCount: Math.max(1, Math.ceil(batch.cases.length / pageSize)) };
+    }
+    const entry = required(batch.cases.find(entry => entry.id === args.caseId), "批次案例");
+    if (section === "case") return entry;
+    if (section === "decision") {
+      return this.#learningChunk(JSON.stringify(this.store.learningDecision(batch.id, entry.id)), args);
+    }
+    if (section === "comments") return this.store.comments(entry.itemId, entry.itemVersion, args);
+    if (["body", "comment", "diff", "video-description"].includes(section)) return this.store.content(entry.itemId, { ...args, version: entry.itemVersion });
+    throw new Error("学习查询区段无效");
+  }
+  #learningChunk(text, args) {
+    const offset = Number(args.offset ?? 0), length = Number(args.length ?? 16000);
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > 32000) throw new Error("查询分块参数无效");
+    const content = Array.from(text), next = offset + length;
+    return { text: content.slice(offset, next).join(""), total: content.length, nextOffset: next < content.length ? next : null, complete: next >= content.length };
+  }
+  proposeLearningFromSession(actor, submission) {
+    const { binding } = this.#learningBinding(actor);
+    actor.assertWritable?.();
+    return this.store.proposeLearning(binding, submission, actor.callId, nowISO(this.clock));
+  }
+  learningBackground(sessionId) {
+    const binding = this.sessionBinding(sessionId);
+    return binding?.role === "learning" ? this.readLearningFromSession({ sessionId }, { section: "batch" }) : null;
+  }
+  requireLearningSubmission(sessionId) { return required(this.store.learningSubmission(sessionId), "本批学习工具提交结果"); }
+  async applyLearning(id, input) {
+    const batch = required(this.store.learning(id), "学习批次"), proposal = required(batch.proposal, "学习建议");
+    if (proposal.status === "applied") return this.store.applyLearning(id, input, {}, nowISO(this.clock));
+    const current = required(this.store.source(batch.sourceId), "来源"), settings = this.store.settings();
+    if (current.revision !== batch.baseSourceRevision || learningHash(settings) !== batch.baseSettingsHash) throw new Error("来源或全局配置已变化，请重新整理建议");
+    const prepared = await this.#prepare(current);
+    if (prepared.contextVersion !== batch.baseContextVersion) throw new Error("来源资料已变化，请重新整理建议");
+    const next = applyLearningChanges(current, settings, proposal.changes), validSource = validateSource(next.source), validSettings = validateSettings(next.settings), nextPrepared = await this.#prepare(validSource, void 0, validSettings);
+    const source = { ...validSource, contextVersion: nextPrepared.contextVersion };
+    return this.store.applyLearning(id, input, { source, settings: validSettings }, nowISO(this.clock));
+  }
+  rejectLearning(id, input) { return this.store.rejectLearning(id, input, nowISO(this.clock)); }
   async markRead(id, version) {
     this.store.markRead(id, version);
   }
@@ -177,7 +302,7 @@ class ConsoleService {
     const source = required(this.store.source(sourceId), "来源"), settings = valuesOf(resolveSettings(this.store.settings(), source));
     let prepared, preparationError;
     try {
-      prepared = await prepareSource(source, await this.workspaces.resolve(source.workspaceId));
+      prepared = await this.#prepare(source);
     } catch (error) {
       preparationError = error;
     }
@@ -204,7 +329,7 @@ class ConsoleService {
         } else {
           if (result.draft) throw new Error("草稿必须通过真实会话工具保存");
           const latestSource = required(this.store.source(sourceId), "来源");
-          const latestContext = await prepareSource(latestSource, await this.workspaces.resolve(latestSource.workspaceId));
+          const latestContext = await this.#prepare(latestSource);
           applied = latestContext.contextVersion === run.contextVersion ? this.store.adoptResult(run.id, result) : false;
           if (!applied) this.store.updateRun(run.id, { result, resultAdopted: false });
         }
@@ -230,7 +355,7 @@ class ConsoleService {
   }
   async openConversation(itemId) {
     return this.#job(`conversation:${itemId}`, async () => {
-      const item = required(this.store.item(itemId), "内容项"), source = required(this.store.source(item.sourceId), "来源"), prepared = await prepareSource(source, await this.workspaces.resolve(source.workspaceId)), existing = this.store.humanSession(itemId, source.workspaceId, item.version, prepared.contextVersion);
+      const item = required(this.store.item(itemId), "内容项"), source = required(this.store.source(item.sourceId), "来源"), prepared = await this.#prepare(source), existing = this.store.humanSession(itemId, source.workspaceId, item.version, prepared.contextVersion);
       if (existing) return { sessionId: existing.sessionId };
       const run = this.#newRun(source, item, prepared, "human");
       try {
@@ -256,7 +381,7 @@ class ConsoleService {
   }
   sessionBinding(sessionId, actualCwd) {
     const binding = this.store.sessionBinding(String(sessionId));
-    if (!binding || binding.legacy || !binding.runId) return null;
+    if (!binding || binding.legacy || (!binding.runId && binding.role !== "learning")) return null;
     if (actualCwd !== void 0 && resolve(actualCwd) !== resolve(binding.cwd)) return null;
     return binding;
   }
@@ -265,7 +390,9 @@ class ConsoleService {
   }
   async readFromSession({ sessionId, actualCwd }, args = {}) {
     if (!this.store.sessionBinding(String(sessionId))) return this.#readFromWorkspace({ sessionId, actualCwd }, args);
-    const binding = this.#binding(sessionId, actualCwd), run = required(this.store.run(binding.runId), "运行记录"), itemId = args.itemId ?? run.itemId, section = args.section ?? "item";
+    const binding = this.#binding(sessionId, actualCwd);
+    if (binding.role === "learning") throw new Error("学习会话请使用专用学习查询工具");
+    const run = required(this.store.run(binding.runId), "运行记录"), itemId = args.itemId ?? run.itemId, section = args.section ?? "item";
     if (section === "items") return this.store.items(binding.sourceId, args);
     const item = required(this.store.header(itemId, args.version ?? (itemId === run.itemId ? run.version : void 0)), "内容项");
     if (item.sourceId !== binding.sourceId) throw new Error("只能查询此会话来源的内容");
@@ -284,7 +411,9 @@ class ConsoleService {
   }
   async submitFromSession({ sessionId, callId, actualCwd, assertWritable }, submission) {
     if (!this.store.sessionBinding(String(sessionId))) return this.#submitFromWorkspace({ sessionId, callId, actualCwd, assertWritable }, submission);
-    const binding = this.#binding(sessionId, actualCwd), run = required(this.store.run(binding.runId), "运行记录");
+    const binding = this.#binding(sessionId, actualCwd);
+    if (binding.role === "learning") throw new Error("学习会话不能保存内容稿件或分析结果");
+    const run = required(this.store.run(binding.runId), "运行记录");
     if (!submission || typeof submission.operationKey !== "string" || !submission.operationKey.trim() || submission.operationKey.length > 160) throw new Error("提交需要有效操作键");
     const allowed = binding.role === "supervisor" ? "supervision" : binding.role === "decision-escalation" ? "decision" : binding.role === "human" ? "draft" : "analysis";
     if (submission.kind !== allowed) throw new Error("会话角色无权提交此结果");
@@ -302,7 +431,7 @@ class ConsoleService {
     if (replay) return replay;
     const source = required(this.store.source(run.sourceId), "来源");
     if (source.workspaceId !== binding.workspaceId) throw new Error("来源工作区已变化，请从当前内容新开会话");
-    const prepared = await prepareSource(source, await this.workspaces.resolve(source.workspaceId));
+    const prepared = await this.#prepare(source);
     assertWritable?.();
     const receipt = this.store.submit(binding, callId, submission, prepared.contextVersion, nowISO(this.clock));
     return receipt;
@@ -349,7 +478,7 @@ class ConsoleService {
     if (section === "items") return this.store.items(source.id, args);
     if (!item && !["context", "materials"].includes(section)) throw new Error("请指定 itemId，先用 section=items 查询本来源内容 ID");
     if (section === "item" || ["context", "materials"].includes(section)) {
-      const prepared = await prepareSource(source, workspace);
+      const prepared = await this.#prepare(source, workspace);
       this.#assertWorkspaceSource(source);
       if (section === "item") return { ...item, contextVersion: prepared.contextVersion };
       const input = assembleInput(prepared, null, { stage: "generation" });
@@ -369,7 +498,7 @@ class ConsoleService {
     this.#assertWorkspaceSource(source);
     const replay = this.store.replaySubmission(String(actor.sessionId), submission);
     if (replay) return replay;
-    const prepared = await prepareSource(source, workspace);
+    const prepared = await this.#prepare(source, workspace);
     this.#assertWorkspaceSource(source);
     if (currentItem.version !== submission.version || prepared.contextVersion !== submission.contextVersion) throw new Error("内容或来源资料已变化，请重新读取后存稿");
     const item = required(this.store.item(currentItem.id), "内容项");
@@ -402,7 +531,7 @@ class ConsoleService {
     return this.#job(`supervise:${id}`, async () => {
       const draft = required(this.store.draft(id), "草稿");
       if (draft.bodyHash !== bodyHash || !["pending-supervision", "blocked"].includes(draft.status)) throw new Error("草稿已变化或不等待监督");
-      const item = required(this.#runItem(required(this.store.run(draft.runId), "运行记录")), "内容项"), source = required(this.store.source(draft.sourceId), "来源"), prepared = await prepareSource(source, await this.workspaces.resolve(source.workspaceId));
+      const item = required(this.#runItem(required(this.store.run(draft.runId), "运行记录")), "内容项"), source = required(this.store.source(draft.sourceId), "来源"), prepared = await this.#prepare(source);
       if (prepared.contextVersion !== draft.contextVersion || this.store.header(item.id).version !== draft.version) {
         this.store.updateDraft(id, { status: "stale" });
         throw new Error("草稿输入已变化，请重新整理");
@@ -427,7 +556,7 @@ class ConsoleService {
   }
   async approveAndPublish(id, { version, bodyHash }) {
     return this.#job(`publish:${id}`, async () => {
-      const draft = required(this.store.draft(id), "草稿"), item = required(this.store.item(draft.itemId), "内容项"), source = required(this.store.source(draft.sourceId), "来源"), prepared = await prepareSource(source, await this.workspaces.resolve(source.workspaceId));
+      const draft = required(this.store.draft(id), "草稿"), item = required(this.store.item(draft.itemId), "内容项"), source = required(this.store.source(draft.sourceId), "来源"), prepared = await this.#prepare(source);
       if (draft.contextVersion !== prepared.contextVersion) throw new Error("来源资料已变化，请重新整理并审核");
       if (draft.status !== "ready" || !draft.supervision?.approved) throw new Error("此草稿未通过监督或不处于待审核状态");
       if (this.store.hasUncertain(item.id, id)) throw new Error("此内容项有发送结果尚未确认，请先核实远端，避免重复发布");

@@ -6,12 +6,13 @@ export const time = value => value ? new Date(value).toLocaleString('zh-CN', { m
 export const safeURL = value => { try { const url = new URL(value); return ['https:','http:'].includes(url.protocol) ? url.href : undefined; } catch { return undefined; } };
 export { request } from './api.js';
 
-const settingNames = { fetchHours: '抓取间隔（小时）', organizeHours: '整理间隔（小时）', language: '摘要语言', decisionProfile: 'Jev 决策 profile', decisionConfidence: '决策概率阈值', decisionMargin: '决策概率差阈值', writerProvider: '生成 / 分析提供商', writerModel: '生成 / 分析模型', supervisorProvider: '监督提供商', supervisorModel: '监督模型', replyStyle: '回复风格', reviewFocus: 'PR 审查重点' };
+const settingNames = { fetchHours: '抓取间隔（小时）', organizeHours: '整理间隔（小时）', language: '摘要语言', decisionProfile: 'Jev 决策 profile', decisionConfidence: '决策概率阈值', decisionMargin: '决策概率差阈值', writerProvider: '生成 / 分析提供商', writerModel: '生成 / 分析模型', supervisorProvider: '监督提供商', supervisorModel: '监督模型', replyStyle: '回复风格', reviewFocus: 'PR 审查重点', learningGuidance: '全局学习指导' };
 const settingGroups = [
   { title: '抓取与整理频率', keys: ['fetchHours','organizeHours'], hint: '自动整理只处理新变化和需要更新的既有分析。手动整理已有数据也包含尚未分析的历史基线。' },
   { title: 'Jev · 轻量决策', keys: ['decisionProfile','decisionConfidence','decisionMargin'], hint: '评论先由 Jev 输出忽略、拟稿、人工介入的选项概率。普通模型的概率为自报估计，未经校准，阈值需用实际样本验证。选择默认项时使用 Jev 的默认 profile。此路线独立于生成模型。' },
   { title: '生成 / 分析模型', keys: ['writerProvider','writerModel'], hint: '用于低置信决策的一次升级、评论拟稿、PR 审查、issue 核实和 release 摘要。摘要与正文来自同一次生成 / 分析输出，没有独立总结调用。' },
   { title: '独立监督模型', keys: ['supervisorProvider','supervisorModel'], hint: '有拟发布正文后才检查草稿。未单独填写的字段继承生成 / 分析模型，但仍创建独立会话。监督通过仍需用户审核发布。' },
+  { title: '评价学习指导', keys: ['learningGuidance'], hint: '作为四个模型阶段的共同指导。整理评价生成提案后，只有人工确认应用才会修改这里。也可手动编辑。' },
   { title: '内容偏好', keys: ['language','replyStyle','reviewFocus'], hint: '按来源平台和内容能力生效。' },
 ];
 const emptySettingHints = {
@@ -32,14 +33,14 @@ export function SettingFields({parameters,values,onChange,effective,catalog}) {
   const applicable=Object.entries(parameters).filter(([key])=>!effective||effective[key]);
   return settingGroups.map(group=>{
     const fields=applicable.filter(([key])=>group.keys.includes(key));
-    return fields.length?<fieldset className="dmc-setting-group" key={group.title}><legend>{group.title}</legend><p className="dmc-muted">{group.hint}</p>{fields.map(([key,spec])=>['decisionProfile','writerProvider','writerModel','supervisorProvider','supervisorModel'].includes(key)?<ModelSettingField key={key} field={key} label={settingNames[key]} values={values} onChange={onChange} effective={effective} catalog={catalog}/>:<label key={key} className="dmc-field"><span>{settingNames[key]??key}</span><input type={spec.type==='number'?'number':'text'} step={spec.type==='number'?'any':undefined} min={spec.min} max={spec.max} value={values[key]??''} placeholder={String(effective?.[key]?.value??spec.default)} onChange={event=>{const value=event.target.value; const next={...values};if(value==='')delete next[key];else next[key]=spec.type==='number'?Number(value):value;onChange(next);}}/><small>{settingHint(key,spec,values,effective)}</small></label>)}</fieldset>:null;
+    return fields.length?<fieldset className="dmc-setting-group" key={group.title}><legend>{group.title}</legend><p className="dmc-muted">{group.hint}</p>{fields.map(([key,spec])=>['decisionProfile','writerProvider','writerModel','supervisorProvider','supervisorModel'].includes(key)?<ModelSettingField key={key} field={key} label={settingNames[key]} values={values} onChange={onChange} effective={effective} catalog={catalog}/>:<label key={key} className="dmc-field"><span>{settingNames[key]??key}</span>{key==='learningGuidance'?<textarea rows="5" value={values[key]??''} placeholder={String(effective?.[key]?.value??spec.default)} onChange={event=>{const next={...values};if(event.target.value==='')delete next[key];else next[key]=event.target.value;onChange(next);}}/>:<input type={spec.type==='number'?'number':'text'} step={spec.type==='number'?'any':undefined} min={spec.min} max={spec.max} value={values[key]??''} placeholder={String(effective?.[key]?.value??spec.default)} onChange={event=>{const value=event.target.value; const next={...values};if(value==='')delete next[key];else next[key]=spec.type==='number'?Number(value):value;onChange(next);}}/>}<small>{settingHint(key,spec,values,effective)}</small></label>)}</fieldset>:null;
   });
 }
 export function ModelWorkflowInfo() {
   return <details className="dmc-model-info"><summary>模型调用与上下文如何分工</summary><p>DSH 的 API 配置负责连接模型服务。本插件还需在全局配置或来源覆盖中从下拉列表选择提供商和模型，才知道生成 / 分析时选择哪条宿主路由。</p><ol><li>评论先调用 Jev 轻量决策，返回各选项概率。忽略或人工介入时，界面显示固定的分流提示，不生成内容摘要或回复。</li><li>决策概率不足时，使用生成 / 分析模型升级判断一次，仍不确定则交给用户。</li><li>需要拟稿时生成评论回复。PR、issue、release 分别执行审查、核实、摘要任务。内容摘要与正文是该次生成 / 分析的输出，没有单独总结调用。</li><li>有拟发布正文后，独立监督会话检查草稿。上下文不完整的内容只标记人工介入，不调用模型。</li></ol><p>各阶段使用共用背景和仅属于当前阶段的专属上下文与资料，保留来源信息与原始内容及讨论。角色任务指令各不相同；决策升级附加 decision，监督附加 draft。共用原文与讨论完整保留，Jev 不带入其他阶段的专属背景。Jev 以 state 接收数据、问题 instructions 接收可信规则；Agent 使用真实 DSH 会话，人工会话保留完整历史。</p></details>;
 }
 export function roleLabel(role,itemKind) {
-  return ({'decision-escalation':'低置信决策升级',writer:itemKind==='release'?'Release 摘要':'评论拟稿 / 生成分析',review:'PR 审查',investigate:'Issue 核实',supervisor:'独立监督',human:'人工处理'})[role]??role;
+  return ({'decision-escalation':'低置信决策升级',writer:itemKind==='release'?'Release 摘要':'评论拟稿 / 生成分析',review:'PR 审查',investigate:'Issue 核实',supervisor:'独立监督',human:'人工处理',learning:'评价学习'})[role]??role;
 }
 export function MoveButtons({index,length,onMove,label}) {
   return <span className="dmc-move"><button type="button" aria-label={`${label}上移`} disabled={index===0} onClick={()=>onMove(index,-1)}>↑</button><button type="button" aria-label={`${label}下移`} disabled={index===length-1} onClick={()=>onMove(index,1)}>↓</button></span>;
