@@ -234,3 +234,73 @@ test('feedback on a newer unorganized content version does not relabel old analy
   assert.equal(batch.cases[0].analysisSnapshot, null); assert.equal(batch.cases[0].hasDecision, false);
   assert.equal(f.service.readLearningFromSession({ sessionId: batch.sessionId }, { section: 'decision', caseId: batch.cases[0].id }).text, 'null');
 });
+
+function adoptHuman(f, id) {
+  const item = f.store.item(id), source = f.service.source(f.source.id), runId = `feedback-run-${item.analysisRevision}`;
+  f.store.createRun({ id: runId, itemId: id, sourceId: source.id, workspaceId: 'ws', version: item.version, contextVersion: source.contextVersion, sourceContextVersion: source.contextVersion, baseAnalysisRevision: item.analysisRevision, status: 'completed' });
+  assert.equal(f.store.adoptResult(runId, analysis), true);
+  return runId;
+}
+function saveCurrentFeedback(f, id, text) {
+  const item = f.store.item(id);
+  return f.service.saveFeedback(id, { text, expectedRevision: f.service.feedback(id).revision, itemVersion: item.version, analysisRevision: item.analysisRevision });
+}
+
+test('saving nonempty feedback completes this attention atomically, retains drafts and frozen analysis; later events reopen it', async t => {
+  const f = await fixture(t), id = f.items()[0].id;
+  const runId = adoptHuman(f, id);
+  f.service.bindSession({ sessionId: 'feedback-human', runId, role: 'human', workspaceId: 'ws', cwd: f.workspace });
+  const draft = await f.service.submitFromSession({ sessionId: 'feedback-human' }, { kind: 'draft', operationKey: 'old-draft', body: '保留的旧草稿' });
+  f.store.handling(id, 'later');
+  assert.equal(f.items()[0].needsHandling, true);
+  const saved = saveCurrentFeedback(f, id, '普通评论，已检查');
+  let item = f.items()[0];
+  assert.equal(item.handling, 'done'); assert.equal(item.status, 'read'); assert.equal(item.readVersion, item.version);
+  assert.equal(item.attentionAcknowledged, true); assert.equal(item.priority, 0); assert.equal(item.needsHandling, false);
+  assert.equal(f.store.items(f.source.id, { filter: 'handling' }).total, 0);
+  assert.equal(f.service.overview().sources[0].handling, 0);
+  assert.deepEqual(saved.analysisSnapshot, analysis); assert.deepEqual(f.store.item(id).analysis, analysis);
+  assert.equal(f.service.draft(draft.draftId).body, '保留的旧草稿'); assert.equal(f.service.feedback(id).learned, false);
+  await f.store.close(); await f.store.start();
+  assert.equal(f.store.item(id).handling, 'done'); assert.equal(f.items()[0].needsHandling, false);
+  f.store.updateDraft(draft.draftId, { status: 'ready' });
+  item = f.items()[0]; assert.equal(item.handling, 'pending'); assert.equal(item.needsHandling, true);
+  saveCurrentFeedback(f, id, '这次也处理完');
+  await f.service.submitFromSession({ sessionId: 'feedback-human' }, { kind: 'draft', operationKey: 'new-draft', body: '后来保存的新草稿' });
+  assert.equal(f.items()[0].needsHandling, true); assert.equal(f.store.header(id).handling, 'pending');
+  saveCurrentFeedback(f, id, '已检查新草稿');
+  adoptHuman(f, id);
+  item = f.items()[0]; assert.equal(item.handling, 'pending'); assert.equal(item.attentionAcknowledged, false); assert.equal(item.status, 'handling');
+  saveCurrentFeedback(f, id, '已处理新分析');
+  f.store.applyFetch(f.source.id, [{ remoteId: '0', kind: 'comment', title: '问题0', body: '新增原文', payload: {} }], {}, new Date().toISOString(), fingerprint);
+  item = f.items()[0]; assert.equal(item.handling, 'none'); assert.equal(item.attentionAcknowledged, false); assert.notEqual(item.readVersion, item.version);
+  assert.equal(f.service.draft(draft.draftId).body, '保留的旧草稿');
+});
+
+test('empty or conflicting feedback leaves current handling, reading and attention untouched', async t => {
+  const f = await fixture(t), id = f.items()[0].id;
+  adoptHuman(f, id);
+  const before = f.store.item(id), sourceBefore = f.service.overview().sources[0];
+  const input = { text: '不要覆盖', expectedRevision: 1, itemVersion: before.version, analysisRevision: before.analysisRevision };
+  for (const change of [{ expectedRevision: 0 }, { itemVersion: 'outdated' }, { analysisRevision: 0 }]) {
+    assert.throws(() => f.service.saveFeedback(id, { ...input, ...change }), /评价已变化|内容或分析已更新/);
+    assert.deepEqual(f.store.item(id), before); assert.equal(f.service.feedback(id).revision, 1);
+    assert.deepEqual(f.service.overview().sources[0], sourceBefore);
+  }
+  const saved = saveCurrentFeedback(f, id, ' \n ');
+  assert.equal(saved.text, ''); assert.deepEqual(f.store.item(id), before);
+  assert.equal(f.items()[0].needsHandling, true);
+});
+
+test('manual completion acknowledges current drafts but a new human analysis restores pending consistently', async t => {
+  const f = await fixture(t), id = f.items()[0].id;
+  const runId = adoptHuman(f, id);
+  f.service.bindSession({ sessionId: 'manual-human', runId, role: 'human', workspaceId: 'ws', cwd: f.workspace });
+  await f.service.submitFromSession({ sessionId: 'manual-human' }, { kind: 'draft', operationKey: 'manual-draft', body: '保留待审核草稿' });
+  await f.service.setHandling(id, 'done');
+  assert.equal(f.store.header(id).handling, 'done'); assert.equal(f.items()[0].needsHandling, false);
+  f.store.markRead(id);
+  assert.equal(f.store.header(id).handling, 'done');
+  adoptHuman(f, id);
+  assert.equal(f.store.header(id).handling, 'pending'); assert.equal(f.items()[0].needsHandling, true);
+});

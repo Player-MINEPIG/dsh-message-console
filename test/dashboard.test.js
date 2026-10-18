@@ -24,3 +24,10 @@ test('handling precedes unread, with completed personal status suppressing old i
   assert.equal(itemStatus(read,[{itemId:read.id,status:'pending-supervision'}]),'handling');
   assert.equal(itemStatus({...read,analysis:{intervention:'human'},analyzedVersion:'v1'}),'read');
 });
+
+
+test('acknowledged attention suppresses pending state and retained drafts until a new event',()=>{
+  const done=item('done',{readVersion:'v2',handling:'done',attentionAcknowledged:true,analysis:{intervention:'human'}}),drafts=[{itemId:'done',status:'ready'}];
+  assert.equal(needsHandling(done,drafts),false);assert.equal(itemStatus(done,drafts),'read');
+  assert.equal(needsHandling({...done,handling:'pending',attentionAcknowledged:false},drafts),true);
+});

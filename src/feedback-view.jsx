@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { request, labels, time, safeURL, useRemoteResource, ResourceError, ListPagination } from './ui-shared.jsx';
 
-export function FeedbackEditor({item,revision,onDirtyChange=()=>{}}) {
+export function FeedbackEditor({item,revision,onDirtyChange=()=>{},onSaved=()=>{}}) {
   const path=`items/${encodeURIComponent(item.id)}/feedback`;
   const resource=useRemoteResource(path,{revision});
   const [saved,setSaved]=useState(null),[text,setText]=useState(''),[status,setStatus]=useState('idle'),[error,setError]=useState('');
@@ -12,10 +12,10 @@ export function FeedbackEditor({item,revision,onDirtyChange=()=>{}}) {
   const reload=async()=>{if(dirty&&!window.confirm('重新加载会放弃输入框中的修改，是否继续？'))return;setStatus('loading');try{const record=await request(path);setSaved(record);setText(record.text);setError('');setStatus('idle');}catch(error){setError(error.message);setStatus('error');}};
   const save=async()=>{
     setStatus('saving');setError('');
-    try{const record=await request(path,{text,expectedRevision:saved.revision,itemVersion:item.version,analysisRevision:item.analysisRevision});setSaved(record);setText(record.text);setStatus('saved');}
+    try{const record=await request(path,{text,expectedRevision:saved.revision,itemVersion:item.version,analysisRevision:item.analysisRevision});setSaved(record);setText(record.text);setStatus('saved');onSaved();}
     catch(error){setStatus('error');setError(`${error.message}。你的修改仍保留在输入框中。`);}
   };
-  return <section className="dmc-feedback-editor"><h3>我的评价</h3><p className="dmc-muted">记录哪里判断错了、你期望怎样处理。保存评价后，可在“整理用户评价”中生成修改提案，确认应用后才生效。</p><ResourceError error={resource.error||error}/>{saved?<><label className="dmc-field"><span className="dmc-sr-only">我的评价内容</span><textarea rows="4" maxLength={10000} value={text} disabled={['saving','loading'].includes(status)} placeholder="例如：这只是普通提问，不需要标成高优先级。" onChange={event=>{setText(event.target.value);setStatus('idle');}}/></label><div className="dmc-section-actions"><button type="button" className="dmc-primary" disabled={!dirty||['saving','loading'].includes(status)} onClick={save}>{status==='saving'?'正在保存评价…':'保存评价'}</button>{error&&<button type="button" disabled={status==='loading'} onClick={reload}>重新加载最新评价</button>}{dirty&&<button type="button" disabled={['saving','loading'].includes(status)} onClick={()=>{setText(saved.text);setError('');setStatus('idle');}}>放弃修改</button>}<small role="status">{dirty?'有未保存的修改':status==='saved'?'评价已保存':saved.text?saved.learned?'该版本评价已学习':'已保存 · 尚未学习':'尚未填写评价'}</small></div></>:<p>正在加载评价…</p>}</section>;
+  return <section className="dmc-feedback-editor"><h3>我的评价</h3><p className="dmc-muted">记录哪里判断错了、你期望怎样处理。保存非空评价会将当前内容标为已读、已处理；后续新变化仍会提醒。可在“整理用户评价”中生成修改提案，确认应用后才生效。</p><ResourceError error={resource.error||error}/>{saved?<><label className="dmc-field"><span className="dmc-sr-only">我的评价内容</span><textarea rows="4" maxLength={10000} value={text} disabled={['saving','loading'].includes(status)} placeholder="例如：这只是普通提问，不需要标成高优先级。" onChange={event=>{setText(event.target.value);setStatus('idle');}}/></label><div className="dmc-section-actions"><button type="button" className="dmc-primary" disabled={!dirty||['saving','loading'].includes(status)} onClick={save}>{status==='saving'?'正在保存评价…':'保存评价'}</button>{error&&<button type="button" disabled={status==='loading'} onClick={reload}>重新加载最新评价</button>}{dirty&&<button type="button" disabled={['saving','loading'].includes(status)} onClick={()=>{setText(saved.text);setError('');setStatus('idle');}}>放弃修改</button>}<small role="status">{dirty?'有未保存的修改':status==='saved'?'评价已保存':saved.text?saved.learned?'该版本评价已学习':'已保存 · 尚未学习':'尚未填写评价'}</small></div></>:<p>正在加载评价…</p>}</section>;
 }
 
 const batchLabels={queued:'排队中',running:'正在整理',pending:'等待确认','no-suggestions':'暂无修改建议',applied:'已应用',rejected:'已拒绝',failed:'整理失败',interrupted:'执行中断'};

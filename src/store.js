@@ -186,7 +186,7 @@ class Store {
       if (item.previous) this.#version({ ...item.previous, id: item.id, url: null, payload: null, changedAt: null }, false);
     }
     for (const run of Object.values(state.runs)) this.#writeRun(run);
-    for (const draft of Object.values(state.drafts)) this.#writeDraft(draft);
+    for (const draft of Object.values(state.drafts)) this.#writeDraft(draft, false);
     const links = /* @__PURE__ */ new Map();
     for (const item of Object.values(state.items)) for (const link of item.sessions ?? []) links.set(link.sessionId, { ...link, itemId: item.id, sourceId: item.sourceId });
     for (const run of Object.values(state.runs)) for (const link of run.sessions ?? []) links.set(link.sessionId, { ...links.get(link.sessionId), ...link, runId: run.id, itemId: run.itemId, sourceId: state.items[run.itemId]?.sourceId });
@@ -303,9 +303,14 @@ class Store {
     const previous = previousVersion ? this.#get("SELECT title,body,version,complete FROM item_versions WHERE item_id=? AND version=?", id, previousVersion) : null;
     return { ...frozen, ...this.#itemState(row), changedAt: version === void 0 ? row.changed_at : snapshot.changed_at, version: snapshot.version, title: snapshot.title, body: snapshot.body, url: snapshot.url, payload: parse(snapshot.payload), complete: Boolean(snapshot.complete), previous: previous ? { title: previous.title, body: previous.body, version: previous.version, complete: Boolean(previous.complete) } : null, sessions: this.#all("SELECT data FROM sessions WHERE item_id=? ORDER BY seq", id).map((r) => parse(r.data)) };
   }
+  #advanceAttention(id) {
+    const item = this.#itemState(required(this.#itemRow(id), "内容项"));
+    const handling = item.handling === "done" ? currentAnalysis(item)?.intervention === "human" ? "pending" : "none" : item.handling;
+    this.#run("UPDATE items SET attention_version=attention_version+1,handling=? WHERE id=?", handling, id);
+  }
   #project(id) {
     const row = required(this.#itemRow(id), "内容项"), item = this.#itemState(row), drafts = this.#all(`SELECT status,item_id FROM drafts WHERE item_id=? AND status IN (${active.map(() => "?").join(",")})`, id, ...active).map((d) => ({ itemId: d.item_id, status: d.status }));
-    const handling = item.attentionAcknowledged ? 0 : Number(needsHandling(item, drafts) || drafts.some((d) => d.status === "pending-supervision")), unread = Number(item.readVersion !== item.version), analyzed = Number(Boolean(currentAnalysis(item))), priority = item.attentionAcknowledged ? 0 : itemPriority(item);
+    const handling = Number(needsHandling(item, drafts)), unread = Number(item.readVersion !== item.version), analyzed = Number(Boolean(currentAnalysis(item))), priority = item.attentionAcknowledged ? 0 : itemPriority(item);
     this.#run("UPDATE items SET priority=?,needs_handling=?,unread=?,analyzed=? WHERE id=?", priority, handling, unread, analyzed, id);
     this.#run("UPDATE sources SET total=total+?,unread=unread+?,handling=handling+?,analyzed=analyzed+?,unorganized=unorganized+? WHERE id=?", 0, unread - row.unread, handling - row.needs_handling, analyzed - row.analyzed, unread * (1 - analyzed) - row.unread * (1 - row.analyzed), row.source_id);
   }
@@ -320,7 +325,7 @@ class Store {
         if (old?.version === version) continue;
         const item = { ...old ? this.#itemState(old) : {}, ...entry, id, sourceId, version, previous: old ? { version: old.version } : null, readVersion: old?.read_version ?? (!source.initialized ? version : null), analyzedVersion: old?.analyzed_version ?? (!source.initialized ? version : null), handling: old?.handling ?? "none", changedAt: at };
         this.#writeItem(item);
-        if (old) this.#run("UPDATE items SET attention_version=attention_version+1 WHERE id=?", id);
+        if (old) this.#advanceAttention(id);
         this.#version(item, true);
         if (!old) this.#countNew(sourceId);
         for (const d of this.#all("SELECT id FROM drafts WHERE item_id=? AND status IN ('pending-supervision','ready','blocked')", id)) this.#updateDraft(d.id, { status: "stale" });
@@ -340,7 +345,7 @@ class Store {
   handling(id, handling) {
     return this.#transaction(() => {
       required(this.#itemRow(id), "内容项");
-      this.#run("UPDATE items SET handling=?,attention_version=attention_version+? WHERE id=?", handling, ["pending", "later"].includes(handling) ? 1 : 0, id);
+      this.#run("UPDATE items SET handling=?,acknowledged_attention_version=CASE WHEN ?='done' THEN attention_version ELSE acknowledged_attention_version END,attention_version=attention_version+? WHERE id=?", handling, handling, ["pending", "later"].includes(handling) ? 1 : 0, id);
       this.#project(id);
     });
   }
@@ -461,12 +466,12 @@ class Store {
   decision(id) {
     return parse(required(this.#get("SELECT decision FROM runs WHERE id=?", id), "运行记录").decision);
   }
-  #writeDraft(draft) {
+  #writeDraft(draft, attentionEvent = true) {
     const old = this.#get("SELECT status FROM drafts WHERE id=?", draft.id);
     const data = { ...draft, bodyHash: createHash("sha256").update(json(draft.body)).digest("hex") };
     delete data.body;
     this.#run("INSERT INTO drafts VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data", draft.id, draft.itemId, draft.sourceId, draft.status, draft.body, draft.createdAt ?? (/* @__PURE__ */ new Date()).toISOString(), json(data));
-    if (!old || old.status !== draft.status && ["pending-supervision", "ready", "blocked"].includes(draft.status)) this.#run("UPDATE items SET attention_version=attention_version+1 WHERE id=?", draft.itemId);
+    if (attentionEvent && (!old || old.status !== draft.status && ["pending-supervision", "ready", "blocked"].includes(draft.status))) this.#advanceAttention(draft.itemId);
   }
   draft(id) {
     const row = this.#get("SELECT * FROM drafts WHERE id=?", id);
@@ -551,7 +556,8 @@ class Store {
     const row = required(this.#itemRow(run.itemId), "内容项"), source = this.source(row.source_id);
     const valid = row.version === run.version && source.contextVersion === run.sourceContextVersion && source.workspaceId === run.workspaceId && row.analysis_revision === (run.baseAnalysisRevision ?? row.analysis_revision);
     if (valid) {
-      this.#run("UPDATE items SET analysis=?,analyzed_version=?,context_version=?,analysis_revision=analysis_revision+1,attention_version=attention_version+1,handling=CASE WHEN handling='none' AND ?='human' THEN 'pending' ELSE handling END WHERE id=?", json(result), run.version, run.contextVersion, result.intervention ?? "none", run.itemId);
+      this.#run("UPDATE items SET analysis=?,analyzed_version=?,context_version=?,analysis_revision=analysis_revision+1,handling=CASE WHEN handling='none' AND ?='human' THEN 'pending' ELSE handling END WHERE id=?", json(result), run.version, run.contextVersion, result.intervention ?? "none", run.itemId);
+      this.#advanceAttention(run.itemId);
       this.#project(run.itemId);
     }
     return valid;
@@ -652,6 +658,10 @@ class Store {
       const run = visibleAnalysis ? this.#get("SELECT id,decision FROM runs WHERE item_id=? AND json_extract(data,'$.version')=? AND json_extract(data,'$.resultAdopted')=1 AND json_extract(data,'$.baseAnalysisRevision')=? ORDER BY started_at DESC,id DESC LIMIT 1", itemId, item.version, item.analysis_revision - 1) : null;
       const feedback = { id: randomUUID(), itemId, sourceId: item.source_id, revision: old.revision + 1, text: input.text, itemVersion: item.version, analysisRevision: item.analysis_revision, analysisSnapshot: visibleAnalysis, runId: run?.id ?? null, decisionSnapshot: parse(run?.decision), updatedAt: at };
       this.#run("INSERT INTO feedback_versions VALUES(?,?,?,?,?,?)", feedback.id, itemId, item.source_id, feedback.revision, feedback.text, json(feedback));
+      if (feedback.text.trim()) {
+        this.#run("UPDATE items SET handling='done',read_version=version,acknowledged_attention_version=attention_version WHERE id=?", itemId);
+        this.#project(itemId);
+      }
       this.#audit("feedback.saved", { feedbackId: feedback.id, itemId, revision: feedback.revision }, at);
       return this.feedback(itemId);
     });

@@ -3,6 +3,7 @@ export const currentAnalysis = item => item.analysis && (item.analyzedVersion ==
 export const hasUrgency = item => Boolean(currentAnalysis(item)?.urgent && currentAnalysis(item)?.urgencyReason?.trim());
 export const itemPriority = item => (currentAnalysis(item)?.importance ?? 0) * 10 + (hasUrgency(item) ? 3 : 0);
 export function needsHandling(item, drafts = []) {
+  if (item.attentionAcknowledged) return false;
   if (['pending', 'later'].includes(item.handling)) return true;
   if (drafts.some(draft => draft.itemId === item.id && activeDraft(draft))) return true;
   if (item.handling === 'done') return false;

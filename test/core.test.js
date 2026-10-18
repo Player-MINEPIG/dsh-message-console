@@ -39,7 +39,7 @@ test('initial baseline is read and not analyzed; later changes stay unread until
   await f.service.organize(f.source.id);assert.equal(f.calls,1);
   await f.service.markRead(item.id,item.version);assert.equal(f.items()[0].readVersion,item.version);
   await f.service.setHandling(item.id,'done');f.setRows([entry('另一条新回复')]);await f.service.refresh(f.source.id);
-  assert.equal(f.items()[0].handling,'done');assert.notEqual(f.items()[0].readVersion,f.items()[0].version);
+  assert.equal(f.items()[0].handling,'none');assert.notEqual(f.items()[0].readVersion,f.items()[0].version);
 });
 test('incomplete baseline never commits or marks source initialized',async t=>{
   const f=await setup(t);f.connector.fetch=async()=>({complete:false,items:[entry('partial')]});

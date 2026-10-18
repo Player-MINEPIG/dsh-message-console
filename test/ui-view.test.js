@@ -12,11 +12,11 @@ test.after(()=>rm(directory,{recursive:true,force:true}));
 const render=(Component,props)=>renderToStaticMarkup(React.createElement(Component,props));
 test('overview renders server summaries without any item or draft collection',()=>{
   const html=render(Dashboard,{state:{platforms:[],sources:[{id:'s',platform:'github',name:'Source',target:'owner/repo',total:10000,unread:180,handling:40,analyzed:10,importance:2,summaries:['服务端变化摘要'],connection:{ready:true}}]},page:{kind:'overview'},order:'priority',onNavigate(){},setOrder(){}});
-  assert.match(html,/服务端变化摘要/);assert.match(html,/10000 个内容项/);assert.match(html,/>180</);assert.match(html,/>40</);
+  assert.match(html,/服务端变化摘要/);assert.match(html,/10000 个内容项/);assert.match(html,/>180</);assert.match(html,/>40</);assert.match(html,/>重要</);assert.doesNotMatch(html,/值得关注/);
 });
 test('cards use server status and explicit original excerpt without full payload',()=>{
   const html=render(ItemCard,{item:{id:'i',status:'handling',title:'评论',kind:'comment',excerpt:'服务器返回的摘录',handling:'none',readVersion:'v1',version:'v1',payload:{contextComplete:true}},onSelect(){}});
-  assert.match(html,/dmc-card-handling/);assert.match(html,/需要处理/);assert.match(html,/原文摘录/);assert.match(html,/服务器返回的摘录/);assert.match(html,/查看全文/);
+  assert.match(html,/dmc-card-handling/);assert.match(html,/待处理/);assert.match(html,/原文摘录/);assert.match(html,/服务器返回的摘录/);assert.match(html,/查看全文/);
 });
 test('server pagination renders clamped page, exact range and supported sizes',()=>{
   const html=render(ListPagination,{pagination:{items:[],page:4,pageSize:10,pageCount:4,total:31},onPage(){},onPageSize(){}});
@@ -68,4 +68,18 @@ test('pending proposals require explicit confirmation and show actual session pl
 test('learning panel selects a source and explains 50 case batching and explicit application',()=>{
   const html=render(FeedbackPanel,{sources:[{id:'s',name:'我的视频',platform:'bilibili'}],sourceId:'s',action(){},onBack(){}});
   assert.match(html,/每次最多整理当前来源的 50 条/);assert.match(html,/应用成功后/);assert.match(html,/我的视频 · 哔哩哔哩/);assert.match(html,/历史学习批次/);
+});
+
+
+test('card status appears once, with handling separate from importance',()=>{
+  const base={id:'i',status:'handling',kind:'comment',title:'需要评价',handling:'pending',readVersion:'v1',version:'v1',analyzedVersion:'v1',analysis:{importance:2,summary:'摘要'},attentionAcknowledged:false};
+  const pending=render(ItemCard,{item:base,onSelect(){}});
+  assert.equal((pending.match(/待处理/g)||[]).length,1);assert.equal((pending.match(/dmc-item-status /g)||[]).length,1);
+  assert.match(pending,/dmc-item-status-pending/);assert.match(pending,/>重要</);assert.doesNotMatch(pending,/需要处理|值得关注/);
+  assert.match(render(ItemCard,{item:{...base,handling:'later'},onSelect(){}}),/dmc-item-status-later">稍后处理/);
+  const done=render(ItemCard,{item:{...base,status:'read',handling:'done',attentionAcknowledged:true},onSelect(){}});
+  assert.match(done,/dmc-item-status-done">已处理/);assert.doesNotMatch(done,/待处理|>重要</);
+  const next=render(ItemCard,{item:{...base,status:'unread',handling:'none',analysis:null,version:'v2'},onSelect(){}});
+  assert.match(next,/dmc-item-status-unread">未读/);assert.doesNotMatch(next,/已处理/);
+  assert.match(render(ItemCard,{item:{...base,analysis:{...base.analysis,importance:3}},onSelect(){}}),/>高度重要</);
 });
