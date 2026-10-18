@@ -1,10 +1,10 @@
 const ROOT = 'https://api.github.com';
 export class GitHubConnector {
   constructor({ request = fetch, account = null, maxPages = 100, timeoutMs = 30_000 } = {}) { Object.assign(this, { request, account, maxPages, timeoutMs }); }
-  status() { return { ready: true, canPublish: Boolean(this.account), reason: this.account ? '已连接授权账号' : '仅公开仓库读取；Chrome 网页登录尚未桥接到后台 API' }; }
+  status() { return { ready: true, canPublish: Boolean(this.account), access: this.account ? 'account' : 'public', reason: this.account ? '已连接授权账号' : '已明确使用匿名模式，仅公开仓库读取' }; }
   async call(path, { signal, method = 'GET', body, accept = 'application/vnd.github+json', redirect } = {}) {
     const url = new URL(path, ROOT);
-    if (url.origin !== ROOT) throw new Error('拒绝跨站 GitHub API 请求');
+    if (url.origin !== ROOT || url.username || url.password) throw new Error('拒绝跨站 GitHub API 请求');
     signal = signal ? AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs);
     const response = await this.request(url.href, { method, signal, ...(redirect?{redirect}:{}), headers: { Accept: accept, 'X-GitHub-Api-Version': '2026-03-10', ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     if (!response.ok) {
@@ -17,7 +17,8 @@ export class GitHubConnector {
       error.definitelyNotSent = method !== 'GET' && [400,401,403,404,422,429].includes(response.status);
       throw error;
     }
-    const data = await response.json();
+    let data;
+    try { data = await response.json(); } catch { throw new Error('GitHub 响应不是有效 JSON，未推进采集基线'); }
     return { data, link: response.headers.get('link') };
   }
   async metadata(source,options={}) {
@@ -55,24 +56,33 @@ export class GitHubConnector {
     const prefix = `/repos/${source.target}`;
     const row = issue ?? (await this.call(`${prefix}/issues/${number}`, { signal })).data;
     const comments = await this.pages(`${prefix}/issues/${number}/comments?per_page=100`, { signal });
-    const payload = { number, state: row.state, author: row.user?.login, labels: (row.labels ?? []).map(label => typeof label === 'string' ? label : label.name).sort(), comments: comments.map(comment => ({ id: String(comment.id), author: comment.user?.login, body: comment.body, updatedAt: comment.updated_at })) };
+    const payload = { number, state: String(row.state).toLowerCase(), author: row.user?.login, labels: (row.labels ?? []).map(label => typeof label === 'string' ? label : label.name).sort(), comments: comments.map(comment => ({ id: String(comment.id), author: comment.user?.login, body: comment.body, updatedAt: comment.updated_at })) };
     if (kind === 'pr') {
       const pr = (await this.call(`${prefix}/pulls/${number}`, { signal })).data;
+      payload.state = pr.merged || pr.merged_at ? 'merged' : String(pr.state).toLowerCase();
+      payload.merged = Boolean(pr.merged || pr.merged_at);
+      payload.mergedAt = pr.merged_at ?? null;
       const files = await this.pages(`${prefix}/pulls/${number}/files?per_page=100`, { signal });
-      if (pr.changed_files > files.length || files.length >= 3000) throw new Error('PR 文件上下文不完整，不能执行完整审查');
+      payload.contextComplete = !(pr.changed_files > files.length || files.length >= 3000);
       const reviewComments = await this.pages(`${prefix}/pulls/${number}/comments?per_page=100`, { signal });
       const reviews = await this.pages(`${prefix}/pulls/${number}/reviews?per_page=100`, { signal });
       payload.head = pr.head.sha; payload.base = pr.base.sha;
       payload.files = files.map(file => ({ path: file.filename, previousPath: file.previous_filename, status: file.status, patch: file.patch ?? null, additions: file.additions, deletions: file.deletions }));
-      payload.contextLimit = '仅提供变更patch与讨论；没有patch的文件无法审查，不代表已检查完整仓库或运行测试。';
+      payload.contextLimit = payload.contextComplete ? '仅提供变更patch与讨论；没有patch的文件无法审查，不代表已检查完整仓库或运行测试。' : 'PR 文件列表超出 GitHub API 上限或文件未取完整，仅保留已采集内容及状态，不执行自动审查。';
       payload.reviewComments = reviewComments.map(comment => ({ id: String(comment.id), parent: comment.in_reply_to_id ? String(comment.in_reply_to_id) : null, author: comment.user?.login, body: comment.body, path: comment.path, diff: comment.diff_hunk, updatedAt: comment.updated_at }));
       payload.reviews = reviews.map(review => ({ id: String(review.id), author: review.user?.login, body: review.body, state: review.state, commit: review.commit_id }));
       const latest = (await this.call(`${prefix}/pulls/${number}`, { signal })).data;
-      if (latest.head.sha !== payload.head) throw new Error('采集期间PR提交发生变化，请重新抓取');
+      if (latest.head.sha !== payload.head || (latest.merged || latest.merged_at ? 'merged' : String(latest.state).toLowerCase()) !== payload.state) throw new Error('采集期间PR提交或状态发生变化，请重新抓取');
     }
     return { remoteId: `${kind}:${row.id}`, kind, title: row.title, body: row.body ?? '', url: row.html_url, payload };
   }
-  getItem(source, item, options) { return this.readDiscussion(source, item.payload.number, item.kind, options); }
+  async getItem(source, item, options) {
+    if (item.kind === 'release') {
+      const { data: row } = await this.call(`/repos/${source.target}/releases/tags/${encodeURIComponent(item.payload.tag)}`, options);
+      return { remoteId: `release:${row.id}`, kind: 'release', title: row.name || row.tag_name, body: row.body ?? '', url: row.html_url, payload: { id: String(row.id), tag: row.tag_name, prerelease: row.prerelease, publishedAt: row.published_at } };
+    }
+    return this.readDiscussion(source, item.payload.number, item.kind, options);
+  }
   async publish(source, item, draft, { actionId }) {
     if (!this.account) { const error = new Error('GitHub 未连接可发布账号'); error.definitelyNotSent = true; throw error; }
     const body = `${draft.body}\n\n<!-- dsh-message-console:${actionId} -->`;

@@ -280,7 +280,7 @@ class Store {
     this.#run(`INSERT INTO items(id,source_id,remote_id,kind,version,previous_version,read_version,analyzed_version,context_version,handling,changed_at,analysis,data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,previous_version=excluded.previous_version,read_version=excluded.read_version,analyzed_version=excluded.analyzed_version,context_version=excluded.context_version,handling=excluded.handling,changed_at=excluded.changed_at,analysis=excluded.analysis,data=excluded.data`, item.id, item.sourceId, item.remoteId, item.kind, item.version, item.previous?.version ?? null, item.readVersion ?? null, item.analyzedVersion ?? null, item.analyzedContextVersion ?? null, item.handling ?? "none", item.changedAt ?? "", item.analysis ? json(item.analysis) : null, json(extras));
   }
   #version(item, complete) {
-    this.#run("INSERT OR IGNORE INTO item_versions(item_id,version,title,body,url,payload,changed_at,complete,data,metadata) VALUES(?,?,?,?,?,?,?,?,?,?)", item.id, item.version, item.title ?? "", item.body ?? "", item.url ?? null, item.payload ? json(item.payload) : null, item.changedAt ?? null, complete ? 1 : 0, json({ ...Object.fromEntries(Object.entries(item).filter(([key]) => !["id", "version", "changedAt", "title", "body", "payload", "url", "analysis", "sessions", "previous"].includes(key))), previousVersion: item.previous?.version ?? null }), json({ contextComplete: item.payload?.contextComplete, contextLimit: item.payload?.contextLimit, diffLength:0, ...item.payload?.video ? { video: { title: item.payload.video.title, owner: item.payload.video.owner, descriptionLength:0 } } : {} }));
+    this.#run("INSERT OR IGNORE INTO item_versions(item_id,version,title,body,url,payload,changed_at,complete,data,metadata) VALUES(?,?,?,?,?,?,?,?,?,?)", item.id, item.version, item.title ?? "", item.body ?? "", item.url ?? null, item.payload ? json(item.payload) : null, item.changedAt ?? null, complete ? 1 : 0, json({ ...Object.fromEntries(Object.entries(item).filter(([key]) => !["id", "version", "changedAt", "title", "body", "payload", "url", "analysis", "sessions", "previous"].includes(key))), previousVersion: item.previous?.version ?? null }), json({ state: item.payload?.state, merged: item.payload?.merged, contextComplete: item.payload?.contextComplete, contextLimit: item.payload?.contextLimit, diffLength:0, ...item.payload?.video ? { video: { title: item.payload.video.title, owner: item.payload.video.owner, descriptionLength:0 } } : {} }));
     this.#run(`UPDATE item_versions SET metadata=CASE WHEN json_type(metadata,'$.video')='object' THEN json_set(metadata,'$.diffLength',coalesce(length(json_extract(payload,'$.diff')),0),'$.video.descriptionLength',coalesce(length(json_extract(payload,'$.video.description')),0)) ELSE json_set(metadata,'$.diffLength',coalesce(length(json_extract(payload,'$.diff')),0)) END WHERE item_id=? AND version=?`,item.id,item.version);
     let ordinal = 0;
     for (const comment of [...item.payload?.comments ?? [], ...item.payload?.reviewComments ?? []]) {
@@ -321,9 +321,17 @@ class Store {
     return this.#transaction(() => {
       const source = required(this.source(sourceId), "来源");
       for (const entry of entries) {
-        const id = `${sourceId}:${entry.remoteId}`, old = this.#itemRow(id), version = fingerprint({ title: entry.title, body: entry.body, payload: entry.payload });
+        const legacyRemoteId = source.platform === 'github' ? entry.kind === 'release' && typeof entry.payload?.tag === 'string' ? `release:web-${entry.payload.tag}` : entry.kind === 'pr' && Number.isInteger(entry.payload?.number) ? `pr:web-${entry.payload.number}` : null : null;
+        let old = this.#itemRow(`${sourceId}:${entry.remoteId}`);
+        if (!old && source.platform === 'github' && entry.kind === 'release' && entry.payload?.id) {
+          const matches = this.#all("SELECT i.* FROM items i JOIN item_versions v ON v.item_id=i.id AND v.version=i.version WHERE i.source_id=? AND i.kind='release' AND json_extract(v.payload,'$.id')=? LIMIT 2", sourceId, String(entry.payload.id));
+          if (matches.length > 1) throw new Error('GitHub Release 数字身份重复，未推进采集基线');
+          old = matches[0];
+        }
+        old ??= legacyRemoteId ? this.#itemRow(`${sourceId}:${legacyRemoteId}`) : null;
+        const id = old?.id ?? `${sourceId}:${entry.remoteId}`, version = fingerprint({ title: entry.title, body: entry.body, payload: entry.payload });
         if (old?.version === version) continue;
-        const item = { ...old ? this.#itemState(old) : {}, ...entry, id, sourceId, version, previous: old ? { version: old.version } : null, readVersion: old?.read_version ?? (!source.initialized ? version : null), analyzedVersion: old?.analyzed_version ?? (!source.initialized ? version : null), handling: old?.handling ?? "none", changedAt: at };
+        const item = { ...old ? this.#itemState(old) : {}, ...entry, remoteId: old?.remote_id ?? entry.remoteId, id, sourceId, version, previous: old ? { version: old.version } : null, readVersion: old?.read_version ?? (!source.initialized ? version : null), analyzedVersion: old?.analyzed_version ?? (!source.initialized ? version : null), handling: old?.handling ?? "none", changedAt: at };
         this.#writeItem(item);
         if (old) this.#advanceAttention(id);
         this.#version(item, true);
@@ -366,8 +374,8 @@ class Store {
     return { items: this.#all(selectSql, ...args, q.pageSize, (page - 1) * q.pageSize), page, pageSize: q.pageSize, total, pageCount, revision: this.revision() };
   }
   #card(row) {
-    const item = this.#itemState(row), payload = parse(row.payload);
-    return { ...item, title: row.title, url: row.url, analysis: currentAnalysis(item), priority: row.priority, needsHandling: Boolean(row.needs_handling), status: row.needs_handling ? "handling" : row.unread ? "unread" : "read", excerpt: row.excerpt, payload: { ...payload?.contextComplete !== void 0 ? { contextComplete: payload.contextComplete } : {}, ...payload?.contextLimit ? { contextLimit: payload.contextLimit } : {}, ...payload?.video ? { video: payload.video } : {} } };
+    const item = this.#itemState(row), payload = { ...parse(row.payload), ...row.remote_state ? { state: row.remote_state } : {}, ...row.remote_merged !== void 0 && row.remote_merged !== null ? { merged: Boolean(row.remote_merged) } : {} };
+    return { ...item, title: row.title, url: row.url, analysis: currentAnalysis(item), priority: row.priority, needsHandling: Boolean(row.needs_handling), status: row.needs_handling ? "handling" : row.unread ? "unread" : "read", excerpt: row.excerpt, payload: { ...payload?.state ? { state: payload.state } : {}, ...payload?.merged !== void 0 ? { merged: payload.merged } : {}, ...payload?.contextComplete !== void 0 ? { contextComplete: payload.contextComplete } : {}, ...payload?.contextLimit ? { contextLimit: payload.contextLimit } : {}, ...payload?.video ? { video: payload.video } : {} } };
   }
   items(sourceId, input = {}) {
     required(this.source(sourceId), "来源");
@@ -379,13 +387,13 @@ class Store {
       args.push(q.query);
     }
     const from = `FROM items i JOIN item_versions v ON v.item_id=i.id AND v.version=i.version WHERE ${where.join(" AND ")}`;
-    const page = this.#page(`SELECT count(*) n ${from}`, `SELECT i.*,v.title,v.url,substr(v.body,1,600) excerpt,v.metadata payload ${from} ORDER BY i.priority DESC,i.changed_at DESC,i.id LIMIT ? OFFSET ?`, args, q);
+    const page = this.#page(`SELECT count(*) n ${from}`, `SELECT i.*,v.title,v.url,substr(v.body,1,600) excerpt,v.metadata payload,coalesce(json_extract(v.metadata,'$.state'),json_extract(v.payload,'$.state')) remote_state,coalesce(json_extract(v.metadata,'$.merged'),json_extract(v.payload,'$.merged')) remote_merged ${from} ORDER BY i.priority DESC,i.changed_at DESC,i.id LIMIT ? OFFSET ?`, args, q);
     page.items = page.items.map((row) => this.#card(row));
     return page;
   }
   header(id, version) {
-    const row = required(this.#itemRow(id), "内容项"), v = required(this.#get(`SELECT title,url,length(body) body_length,json_extract(metadata,'$.diffLength') diff_length,metadata payload,version,complete,data,changed_at FROM item_versions WHERE item_id=? AND version=?`, id, version ?? row.version), "内容版本");
-    const header = this.#card({ ...row, title: v.title, url: v.url, excerpt: "", payload: v.payload });
+    const row = required(this.#itemRow(id), "内容项"), v = required(this.#get(`SELECT title,url,length(body) body_length,json_extract(metadata,'$.diffLength') diff_length,metadata payload,json_extract(payload,'$.state') remote_state,json_extract(payload,'$.merged') remote_merged,version,complete,data,changed_at FROM item_versions WHERE item_id=? AND version=?`, id, version ?? row.version), "内容版本");
+    const header = this.#card({ ...row, title: v.title, url: v.url, excerpt: "", payload: v.payload, remote_state: v.remote_state, remote_merged: v.remote_merged });
     header.version = v.version;
     if (v.version !== row.version) header.analysis = null;
     const previousVersion = version === void 0 ? row.previous_version : parse(v.data).previousVersion;
@@ -428,10 +436,11 @@ class Store {
       return { ...s, total: row.total, unread: row.unread, handling: row.handling, analyzed: row.analyzed, unreadUnorganized: row.unorganized, importance: Math.floor((top?.priority ?? 0) / 10), urgent: Boolean(this.#get("SELECT 1 FROM items WHERE source_id=? AND priority%10>0 LIMIT 1", row.id)), priority: top?.priority ?? 0, changedAt: changed ?? "", summaries };
     });
   }
-  candidates(sourceId, scope, contextVersion) {
+  candidates(sourceId, scope, contextVersion, { includeClosed = true } = {}) {
     const total = this.#get("SELECT count(*) n FROM items WHERE source_id=?", sourceId).n;
-    const refs = this.#all(`SELECT id,version FROM items WHERE source_id=? AND (analyzed_version IS NOT version OR (analysis IS NOT NULL AND context_version IS NOT ?) ${scope === "history" ? "OR analysis IS NULL" : ""}) ORDER BY id`, sourceId, contextVersion ?? null);
-    return { total, refs, unanalysed: this.#get("SELECT count(*) n FROM items WHERE source_id=? AND analysis IS NULL", sourceId).n };
+    const rows = this.#all(`SELECT i.id,i.version${includeClosed ? '' : ",i.kind,json_extract(v.payload,'$.state') state,json_extract(v.payload,'$.merged') merged"} FROM items i ${includeClosed ? '' : 'JOIN item_versions v ON v.item_id=i.id AND v.version=i.version'} WHERE source_id=? AND (analyzed_version IS NOT i.version OR (analysis IS NOT NULL AND context_version IS NOT ?) ${scope === "history" ? "OR analysis IS NULL" : ""}) ORDER BY i.id`, sourceId, contextVersion ?? null);
+    const refs = rows.filter(row => includeClosed || !(['issue','pr'].includes(row.kind) && (['closed','merged'].includes(String(row.state).toLowerCase()) || row.merged === 1))).map(({id,version}) => ({id,version}));
+    return { total, refs, excludedClosed: rows.length - refs.length, unanalysed: this.#get("SELECT count(*) n FROM items WHERE source_id=? AND analysis IS NULL", sourceId).n };
   }
   #writeRun(run) {
     const { decision, sourceSnapshot, ...data } = run;

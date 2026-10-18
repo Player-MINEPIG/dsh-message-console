@@ -1,7 +1,7 @@
 import { syncSessionDirectory } from './session-directory.js';
 import React, { useEffect, useRef, useState } from 'react';
 import styles from './style.css';
-import { labels, time, safeURL, request, SettingFields, ModelWorkflowInfo, useRemoteResource, ResourceError, ListPagination } from './ui-shared.jsx';
+import { labels, time, safeURL, githubStateLabel, request, SettingFields, ModelWorkflowInfo, useRemoteResource, ResourceError, ListPagination } from './ui-shared.jsx';
 import { Dashboard, SourcePage } from './dashboard-view.jsx';
 import { SourceEditor } from './source-editor.jsx';
 import { useModelCatalog, CatalogStatus } from './model-selector.jsx';
@@ -57,7 +57,7 @@ function GlobalSettings({state,action,pending,catalog}) {
 function Detail({selection,source,revision,action,pending,openSession,close,onFeedbackDirty,onFeedbackSaved}) {
   const root=`items/${encodeURIComponent(selection.id)}`;
   const header=useRemoteResource(`${root}?version=${encodeURIComponent(selection.version)}`,{revision,pollMs:5000}),item=header.data;
-  return <section className="dmc-detail"><header><span>{item?labels[item.kind]:'内容详情'}</span><button aria-label="关闭详情" onClick={close}>×</button></header><ResourceError error={header.error}/>{!item?<p>正在加载详情…</p>:<><h2>{item.title}</h2><a href={safeURL(item.url)} target="_blank" rel="noreferrer">查看原始来源 ↗</a><div className="dmc-detail-actions"><select aria-label="处理状态" value={item.handling} onChange={event=>action(`${root}/handling`,{handling:event.target.value})}>{['none','pending','later','done'].map(value=><option key={value} value={value}>{labels[value]}</option>)}</select><button disabled={pending} onClick={async()=>{const result=await action(`${root}/conversation`);if(result)openSession(result.sessionId);}}>进入会话处理 ↗</button></div>
+  return <section className="dmc-detail"><header><span>{item?labels[item.kind]:'内容详情'}</span><button aria-label="关闭详情" onClick={close}>×</button></header><ResourceError error={header.error}/>{!item?<p>正在加载详情…</p>:<><h2>{item.title}</h2>{githubStateLabel(item)&&<p>{githubStateLabel(item)}</p>}<a href={safeURL(item.url)} target="_blank" rel="noreferrer">查看原始来源 ↗</a><div className="dmc-detail-actions"><select aria-label="处理状态" value={item.handling} onChange={event=>action(`${root}/handling`,{handling:event.target.value})}>{['none','pending','later','done'].map(value=><option key={value} value={value}>{labels[value]}</option>)}</select><button disabled={pending} onClick={async()=>{const result=await action(`${root}/conversation`);if(result)openSession(result.sessionId);}}>进入会话处理 ↗</button></div>
     {currentAnalysis(item)&&<div className="dmc-analysis"><h3>整理结果</h3><p>{item.analysis.summary}</p><small>{item.analysis.reason}</small></div>}
     <FeedbackEditor item={item} revision={revision} onDirtyChange={onFeedbackDirty} onSaved={onFeedbackSaved}/>
     <VideoContext root={root} item={item}/>

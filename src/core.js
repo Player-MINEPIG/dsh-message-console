@@ -316,7 +316,7 @@ class ConsoleService {
     } catch (error) {
       preparationError = error;
     }
-    const { total, refs, unanalysed } = this.store.candidates(sourceId, scope, prepared?.contextVersion), summary = { sourceId, scope, contextVersion: prepared?.contextVersion ?? source.contextVersion, startedAt: nowISO(this.clock), total, candidates: refs.length, completed: 0, failed: 0, skipped: 0, errors: [] };
+    const { total, refs, unanalysed, excludedClosed } = this.store.candidates(sourceId, scope, prepared?.contextVersion, { includeClosed: source.platform !== "github" || settings.includeClosed }), summary = { sourceId, scope, contextVersion: prepared?.contextVersion ?? source.contextVersion, startedAt: nowISO(this.clock), total, excludedClosed, candidates: refs.length, completed: 0, failed: 0, skipped: 0, errors: [] };
     for (const ref of refs) {
       if (this.#closed) break;
       const item = required(this.store.item(ref.id), "内容项");
@@ -357,7 +357,7 @@ class ConsoleService {
     summary.finishedAt = nowISO(this.clock);
     summary.status = summary.failed ? summary.completed ? "partial" : "failed" : summary.completed ? "completed" : "skipped";
     summary.reason = null;
-    if (!refs.length) summary.reason = !total ? "还没有已采集的内容，请先刷新来源。" : scope === "changes" && unanalysed ? "没有待整理的新变化。首次基线仅在手动整理已有数据时处理。" : "当前内容及来源背景均已整理，无需重复运行。";
+    if (!refs.length) summary.reason = excludedClosed ? `默认跳过了 ${excludedClosed} 个已关闭或已合并内容，保留原文与处理历史。可在 GitHub 整理范围中启用。` : !total ? "还没有已采集的内容，请先刷新来源。" : scope === "changes" && unanalysed ? "没有待整理的新变化。首次基线仅在手动整理已有数据时处理。" : "当前内容及来源背景均已整理，无需重复运行。";
     else if (summary.completed + summary.failed < refs.length) summary.reason = "部分候选项在整理期间已变化或插件已停止，本轮跳过，可稍后重试。";
     summary.errorsTruncated = summary.failed > summary.errors.length;
     this.store.updateSource(sourceId, { organizedAt: summary.finishedAt, lastOrganization: summary });

@@ -6,8 +6,8 @@ import { build } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 const directory=await mkdtemp(join(process.cwd(),'.local/ui-test-'));
-await build({stdin:{contents:"export {Dashboard,SourcePage,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination} from './src/ui-shared.jsx'; export {ConsoleApp,VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
-const {Dashboard,SourcePage,ItemCard,ReadAllControl,ListPagination,ConsoleApp,VideoContext,FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory}=await import(join(directory,'ui.mjs'));
+await build({stdin:{contents:"export {Dashboard,SourcePage,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination,SettingFields} from './src/ui-shared.jsx'; export {ConsoleApp,VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
+const {Dashboard,SourcePage,ItemCard,ReadAllControl,ListPagination,SettingFields,ConsoleApp,VideoContext,FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory}=await import(join(directory,'ui.mjs'));
 test.after(()=>rm(directory,{recursive:true,force:true}));
 const render=(Component,props)=>renderToStaticMarkup(React.createElement(Component,props));
 test('overview renders server summaries without any item or draft collection',()=>{
@@ -99,4 +99,14 @@ test('card status appears once, with handling separate from importance',()=>{
   const next=render(ItemCard,{item:{...base,status:'unread',handling:'none',analysis:null,version:'v2'},onSelect(){}});
   assert.match(next,/dmc-item-status-unread">未读/);assert.doesNotMatch(next,/已处理/);
   assert.match(render(ItemCard,{item:{...base,analysis:{...base.analysis,importance:3}},onSelect(){}}),/>高度重要</);
+});
+
+
+test('GitHub status cards and boolean settings explain closed organization without confusing personal handling',()=>{
+  const html=render(ItemCard,{item:{id:'i',kind:'pr',status:'read',handling:'done',title:'PR',payload:{state:'MERGED'}},onSelect(){}});
+  assert.match(html,/已合并/);assert.match(html,/已处理/);
+  const settings=render(SettingFields,{parameters:{includeClosed:{type:'boolean',default:false}},values:{includeClosed:false},onChange(){},effective:{includeClosed:{value:false,origin:'global'}}});
+  assert.match(settings,/GitHub 整理范围/);assert.match(settings,/始终采集全部状态/);assert.match(settings,/<option value="false" selected="">关闭/);assert.match(settings,/<option value="">继承（关闭）/);
+  const inherited=render(SettingFields,{parameters:{includeClosed:{type:'boolean',default:false}},values:{},onChange(){},effective:{includeClosed:{value:true,origin:'global'}}});
+  assert.match(inherited,/<option value="" selected="">继承（开启）/);
 });

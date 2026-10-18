@@ -13,6 +13,7 @@ export const PARAMETERS = {
   supervisorProvider: { scope: 'analysis', default: '', type: 'string' },
   supervisorModel: { scope: 'analysis', default: '', type: 'string' },
   replyStyle: { scope: 'reply', default: '简明、自然；不擅自代表用户作出承诺。', type: 'string' },
+  includeClosed: { scope: 'github', default: false, type: 'boolean' },
   reviewFocus: { scope: 'github', default: '有依据的正确性问题，标明位置与影响。', type: 'string' },
 };
 
