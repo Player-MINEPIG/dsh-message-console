@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { assembleInput, DEFAULT_INPUT_ORDER, INPUT_STAGES, previewExtras } from './input-assembly.js';
 import { identifySourceInput, suggestionTarget, sourcePromptTemplate, mergeSourceSuggestions, suggestionValue, SUGGESTION_FIELDS } from './source-suggestions.js';
 import { CatalogStatus } from './model-selector.jsx';
-import { labels, request, SettingFields, ModelWorkflowInfo, MoveButtons, moveEntry } from './ui-shared.jsx';
+import { labels, request, SettingFields, ModelWorkflowInfo, MoveButtons, moveEntry, useRemoteResource, ResourceError, ListPagination } from './ui-shared.jsx';
 
 export function SourceEditor({source,state,action,pending,onBack,onSaved,catalog}) {
   const [form,setForm]=useState(()=>source?{...source,inputOrder:source.inputOrder??DEFAULT_INPUT_ORDER,description:source.description??'',tags:source.tags??[]}:{workspaceId:'',name:'',description:'',tags:[],platform:'github',target:'',types:['issue','pr'],settings:{},attentionRules:'',context:'',materials:[],postHistoryInstruction:'',inputOrder:[...DEFAULT_INPUT_ORDER],...sourcePromptTemplate({platform:'github',types:['issue','pr']})});
@@ -10,7 +10,8 @@ export function SourceEditor({source,state,action,pending,onBack,onSaved,catalog
   const formRef=useRef(form),protectedFields=useRef(new Set(source?SUGGESTION_FIELDS:[])),fieldVersions=useRef(new Map()),suggestionRevision=useRef(0),suggestionAbort=useRef(null),lastRequestKey=useRef(''),lastIdentifiedLink=useRef('');
   const [previewStage,setPreviewStage]=useState('generation');
   const [tagsText,setTagsText]=useState(()=>source?.tags?.join(', ')??'');
-  const [itemId,setItemId]=useState(()=>state.items.find(item=>item.sourceId===source?.id)?.id??'');
+  const [itemId,setItemId]=useState(''),[itemQuery,setItemQuery]=useState(''),[itemPage,setItemPage]=useState(1);
+  const candidates=useRemoteResource(source?`sources/${encodeURIComponent(source.id)}/items?${new URLSearchParams({page:String(itemPage),pageSize:'10',q:itemQuery,filter:'all'})}`:null);
   const [preview,setPreview]=useState(null),[previewError,setPreviewError]=useState(''),[previewBusy,setPreviewBusy]=useState(false);
   const previewRevision=useRef(0);
   const invalidatePreview=()=>{previewRevision.current++;setPreview(null);setPreviewError('');setPreviewBusy(false);};
@@ -30,8 +31,8 @@ export function SourceEditor({source,state,action,pending,onBack,onSaved,catalog
   useEffect(()=>{if(source||!form.target||!form.types.length)return;const selection={platform:form.platform,target:form.target,types:form.types};const timer=setTimeout(()=>void loadSuggestions(selection),400);return()=>clearTimeout(timer);},[form.platform,form.target,form.types.join('|')]);
   useEffect(()=>()=>{suggestionRevision.current++;suggestionAbort.current?.abort();},[]);
   const selected=Object.fromEntries(Object.entries(state.parameters).filter(([,spec])=>spec.scope==='common'||spec.scope==='analysis'||spec.scope===form.platform||spec.scope==='reply'&&form.platform==='bilibili').map(([key,spec])=>[key,{value:state.settings[key]??spec.default}]));
-  const items=state.items.filter(item=>item.sourceId===source?.id);
-  const input=preview?.input??{...assembleInput({...form,resolvedMaterials:undefined,resolvedStageContexts:undefined,contextVersion:undefined},items.find(item=>item.id===itemId),{stage:previewStage}),...previewExtras(previewStage)};
+  const items=candidates.data?.items??[];
+  const input=preview?.input??{...assembleInput({...form,resolvedMaterials:undefined,resolvedStageContexts:undefined,contextVersion:undefined},undefined,{stage:previewStage}),...previewExtras(previewStage)};
   const loadPreview=async()=>{const revision=++previewRevision.current;const body={stage:previewStage,source:structuredClone(form),...(source?{sourceId:source.id}:{}),...(itemId?{itemId}:{})};setPreviewBusy(true);setPreviewError('');try{const result=await request('sources/preview',body);if(revision===previewRevision.current)setPreview(result);}catch(error){if(revision===previewRevision.current)setPreviewError(error.message);}finally{if(revision===previewRevision.current)setPreviewBusy(false);}};
   useEffect(()=>{if(source)void loadPreview();return()=>{previewRevision.current++;};},[]);
   return <main className="dmc-settings"><div className="dmc-page-title"><button onClick={onBack}>← 返回</button><div><span className="dmc-eyebrow">SOURCE SETTINGS</span><h2>{source?'编辑来源':'添加来源'}</h2></div></div>
@@ -56,7 +57,8 @@ export function SourceEditor({source,state,action,pending,onBack,onSaved,catalog
         <div className="dmc-save-bar"><button className="dmc-primary" disabled={pending}>保存来源</button><button type="button" onClick={onBack}>取消</button></div>
       </section>
       <section className="dmc-assembly"><h3>信息装配预览</h3><p className="dmc-muted">上下移动数据块和资料，保存后用于 Agent、Jev 和新人工会话背景。以下显示数据块与固定边界，不包含模型提供商的完整请求。</p>
-        <label className="dmc-field"><span>预览调用阶段</span><select value={previewStage} onChange={e=>{invalidatePreview();setPreviewStage(e.target.value);}}>{Object.entries(INPUT_STAGES).map(([key,label])=><option key={key} value={key} disabled={['decision','escalation'].includes(key)&&!form.types.includes('comment')||key==='supervision'&&form.types.every(type=>type==='release')}>{label}</option>)}</select><small>预览仅展示共用背景和此阶段的专属背景；服务端会解析所有显式资料以计算来源版本，不执行模型。人工会话使用生成 / 分析背景。</small></label><label className="dmc-field"><span>预览内容项</span><select value={itemId} onChange={e=>{invalidatePreview();setItemId(e.target.value);}}><option value="">无实际内容，仅展示占位</option>{items.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+        <label className="dmc-field"><span>预览调用阶段</span><select value={previewStage} onChange={e=>{invalidatePreview();setPreviewStage(e.target.value);}}>{Object.entries(INPUT_STAGES).map(([key,label])=><option key={key} value={key} disabled={['decision','escalation'].includes(key)&&!form.types.includes('comment')||key==='supervision'&&form.types.every(type=>type==='release')}>{label}</option>)}</select><small>预览仅展示共用背景和此阶段的专属背景；服务端会解析所有显式资料以计算来源版本，不执行模型。人工会话使用生成 / 分析背景。</small></label><label className="dmc-field"><span>搜索预览内容项</span><input value={itemQuery} onChange={e=>{setItemQuery(e.target.value);setItemPage(1);}} placeholder="按标题或原文搜索已采集内容"/></label><ResourceError error={candidates.error}/><label className="dmc-field"><span>预览内容项</span><select value={itemId} onChange={e=>{invalidatePreview();setItemId(e.target.value);}}><option value="">无实际内容，仅展示占位</option>{itemId&&!items.some(item=>item.id===itemId)&&<option value={itemId}>已选择内容 {itemId}</option>}{items.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+        {candidates.data&&<ListPagination pagination={candidates.data} onPage={setItemPage} label="预览内容分页"/>}
         <button type="button" disabled={previewBusy} onClick={loadPreview}>{previewBusy?'正在解析…':'更新真实预览'}</button><p className="dmc-muted">{preview?'服务端已按当前工作区解析资料。':'表单预览。工作区文件尚未读取，请更新真实预览。'}</p>{previewError&&<p role="alert" className="dmc-error">{previewError}</p>}
         <div className="dmc-locked">固定 · system / 当前角色任务<p>宿主系统与独立工作、监督任务先于历史。来源数据不会提升为 system 指令。</p></div>
         <div className="dmc-locked">固定 · 会话历史<p>由 DSH 保留实际会话完整历史；这里不生成或代写历史。</p></div>

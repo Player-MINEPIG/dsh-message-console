@@ -10,9 +10,10 @@ import { BrowserConnector } from './connectors/browser.js';
 import { CookieTransport } from './connectors/cookies.js';
 import { BilibiliConnector } from './connectors/bilibili.js';
 import { GitHubWebConnector } from './connectors/github-web.js';
+import { installAgentTools } from './agent-tools.js';
 
 export const name = 'dsh-message-console';
-export const inject = ['workspaceRegistry', 'agents', 'agentLoop', 'sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'llm', 'decisionModels', 'dshPromptAssembler'];
+export const inject = ['workspaceRegistry', 'agents', 'agentLoop', 'agentPresets', 'permissionPresets', 'sandboxPolicy', 'sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'llm', 'decisionModels', 'dshPromptAssembler'];
 export const Config = Schema.object({ storageDir: Schema.string().required(), cookieFile: Schema.string(), autoSchedule: Schema.boolean().default(true), timeoutMs: Schema.number().min(1000).max(1800000).default(300000) });
 
 export async function apply(ctx, config) {
@@ -36,8 +37,10 @@ export async function apply(ctx, config) {
     connectors.bilibili = new BilibiliConnector(transport);
   }
   const workspaces = createDshWorkspaces(ctx);
-  const executor = createDshExecutor(ctx, { createUserMessage, SessionId, timeoutMs: config.timeoutMs, workspaces });
-  const service = new ConsoleService({ store, connectors, executor, workspaces });
+  let service;
+  const executor = createDshExecutor(ctx, { createUserMessage, SessionId, service: () => service, timeoutMs: config.timeoutMs, workspaces });
+  service = new ConsoleService({ store, connectors, executor, workspaces });
+  await installAgentTools(ctx, service);
   ctx.provide('messageConsole', service);
   ctx.effect(() => () => service.close());
   ctx.inject(['webServer', 'connection'], web => {

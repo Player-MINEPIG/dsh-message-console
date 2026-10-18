@@ -30,18 +30,31 @@ export function watchSessionDirectory(sessions, sessionIds, onError = () => {}) 
 
 /** Keep recovery alive while another DSH main view owns the screen. */
 export function syncSessionDirectory(sessions, loadDirectory, { pollMs = 5000, onError = () => {} } = {}) {
-  let active = true, key = '', inflight = null, stopWatch = () => {};
+  let active = true, after = 0, inflight = null, stopWatch = () => {};
+  const known = new Set();
   const pull = () => {
     if (!active) return Promise.resolve();
     if (inflight) return inflight;
-    inflight = Promise.resolve().then(() => active ? loadDirectory() : null).then(result => {
-      if (!active || !result) return;
-      const { sessionIds } = result;
-      const ids = [...new Set(sessionIds)].sort(), nextKey = ids.join(',');
-      if (nextKey === key) return;
-      key = nextKey; stopWatch();
-      stopWatch = watchSessionDirectory(sessions, ids, onError);
-    }).catch(error => { if (active) onError(error); }).finally(() => { inflight = null; });
+    inflight = (async () => {
+      let changed = false;
+      try {
+        let hasMore;
+        do {
+          const result = await loadDirectory({ after, limit: 100 });
+          if (!active) return;
+          for (const change of result.changes) {
+            if (change.eligible && !known.has(change.sessionId)) { known.add(change.sessionId); changed = true; }
+            if (!change.eligible && known.delete(change.sessionId)) changed = true;
+          }
+          if (result.hasMore && result.next <= after) throw new Error('会话目录游标未前进');
+          after = result.next;
+          hasMore = result.hasMore;
+        } while (active && hasMore);
+      } catch (error) { if (active) onError(error); }
+      finally {
+        if (active && changed) { stopWatch(); stopWatch = watchSessionDirectory(sessions, [...known], onError); }
+      }
+    })().finally(() => { inflight = null; });
     return inflight;
   };
   const timer = pollMs > 0 ? setInterval(() => void pull(), pollMs) : null;

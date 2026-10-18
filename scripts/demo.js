@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { build } from 'esbuild';
@@ -22,20 +23,25 @@ const data={
     {remoteId:'comment:103',kind:'comment',title:'一条需要补充背景的合作邀请',body:'上次讨论的那个合作方案，我们这周可以开始吗？',url:'https://www.bilibili.com',payload:{comments:[]}},
   ],
 };
+data.bilibili.push(...Array.from({length:60},(_,index)=>({remoteId:`comment:${200+index}`,kind:'comment',title:`评论 ${index+4} · 分页验证${index===59?' · 最后一页标记':''}`,body:`这是第 ${index+4} 条评论。用于验证服务端分页、搜索和筛选。`,url:'https://www.bilibili.com',payload:{comments:[]}})));
+data.bilibili[0].body+='\n'+'这是完整保留的原文内容，用于验证按需分块读取。'.repeat(1600)+'\n完整原文结尾MARKER';
+data.bilibili[0].payload.comments=Array.from({length:25},(_,index)=>({id:`demo-comment-${index}`,author:`合成作者${index}`,body:`第${index+1}条完整评论。`+'评论原文。'.repeat(index===0?3500:5),...(index?{parent:'demo-comment-0'}:{})}));
 const connector=platform=>({status:()=>({ready:true,canPublish:false,reason:'本地模拟数据，不连接真实账号'}),fetch:async()=>({complete:true,items:data[platform].map(item=>({...item,body:item.body+(changed?'\n（新增了讨论内容）':'')}))})});
-const executor={catalog:()=>({providers:[],decisionProfiles:[],defaultDecisionProfile:''}),models:async()=>[],conversation:async()=>`demo-human`,analyze:async({item,recordSession,recordDecision})=>{
+let service;
+const bind=(runId,role,source,draftId)=>{const sessionId=`demo-${role}-${randomUUID()}`;service.bindSession({sessionId,runId,role,workspaceId:source.workspaceId,cwd:process.cwd(),...(draftId?{draftId}:{})});return sessionId;};
+const executor={catalog:()=>({providers:[],decisionProfiles:[],defaultDecisionProfile:''}),models:async()=>[],conversation:async({runId,source})=>bind(runId,'human',source),analyze:async({runId,item,source,recordDecision})=>{
   if(item.kind==='comment')await recordDecision({input:{state:item.body,options:['无需回复','准备回复','人工介入']},output:{probabilities:{ignore:.05,draft:.9,human:.05}},demo:true});
-  if(item.remoteId==='comment:103')return{summary:'这条对话需要你补充此前约定。未提前拟回复。',importance:2,urgent:false,reason:'涉及未提供的合作背景和个人决定',intervention:'human'};
-  await recordSession(item.kind==='pr'?'review':'writer',`demo-${item.remoteId}`);await recordSession('supervisor',`demo-supervisor-${item.remoteId}`);
-  if(item.kind==='pr')return{summary:'审查发现一个需要确认的竞态条件：旧请求可能覆盖新结果。建议在合并前核对取消机制。',importance:3,urgent:false,reason:'可能影响实际数据正确性；未运行测试',intervention:'review',draft:{body:'建议检查请求完成时是否仍属于当前查询。如果旧请求后返回，当前实现可能覆盖新筛选结果。可以增加请求版本校验，并补充交错响应的测试。',supervision:{approved:true,reason:'建议范围明确，没有声称已经运行测试。'}}};
-  if(item.kind==='issue')return{summary:'现象可能与筛选状态恢复有关。需要补充稳定复现步骤，尚未证实根因。',importance:2,urgent:false,reason:'影响常用查看路径，需要进一步核实',intervention:'review',draft:{body:'感谢反馈。方便补充一下切换的具体顺序、是否存在未读内容，以及刷新前后的表现吗？目前还不能确定根因。',supervision:{approved:true,reason:'准确区分了观察和未证实判断。'}}};
-  const blocked=item.remoteId==='comment:102';
-  return{summary:blocked?'回复涉及下一期制作安排，监督认为需要你先决定。':'观众提出具体使用问题，回复已准备，等待你审核。',importance:blocked?2:1,urgent:false,reason:blocked?'不能替你承诺发布时间':'有明确问题，适合简短回应',intervention:'review',draft:{body:blocked?'没问题，下周一定更新完整教程！':'这个操作可以在面板菜单里找到“展开全部”。如果方便，可以告诉我你使用的版本，我再确认具体入口。',supervision:{approved:!blocked,reason:blocked?'“下周一定更新”是未经用户确认的个人承诺，已拦截。':'回复没有越过已有信息，也没有擅自承诺。'}}};
-}};
-const service=new ConsoleService({store,connectors:{github:connector('github'),bilibili:connector('bilibili')},executor,workspaces:{resolve:async()=>({path:process.cwd()}),list:async()=>[{id:'demo',title:'演示工作区',path:process.cwd(),status:'ok'}]}});
+  const human=item.remoteId==='comment:103',blocked=item.remoteId==='comment:102',pending=item.remoteId==='comment:101';
+  const analysis={summary:human?'这条对话需要你补充此前约定。未提前拟回复。':blocked?'回复涉及下一期制作安排，监督认为需要你先决定。':pending?'工作工具已保存草稿，等待独立监督。':'已完成合成内容分析，等待人工查看。',importance:human||blocked||pending?2:1,urgent:false,reason:human?'涉及未提供的合作背景和个人决定':'合成数据用于验证工作记录与审核界面',intervention:human?'human':'review',evidence:'inferred'};
+  const sessionId=bind(runId,item.kind==='pr'?'review':item.kind==='issue'?'investigate':'writer',source);
+  const receipt=await service.submitFromSession({sessionId,callId:`demo-call-${runId}`},{kind:'analysis',operationKey:'analysis',analysis,draftBody:human?null:blocked?'没问题，下周一定更新完整教程！':'感谢提问。这是通过工具持久保存的合成回复，等待你查看。'});
+  if(receipt.draft&&!pending){const supervisor=bind(runId,'supervisor',source,receipt.draft.id);await service.submitFromSession({sessionId:supervisor,callId:`demo-supervision-${runId}`},{kind:'supervision',operationKey:'supervision',approved:!blocked,reason:blocked?'“下周一定更新”是未经用户确认的个人承诺，已拦截。':'合成监督检查通过。仍需人工批准发布。'});}
+  return {...receipt.result,processing:'analysis',committed:true,draftId:receipt.draftId};
+},supervise:async({runId,draft,source})=>{const sessionId=bind(runId,'supervisor',source,draft.id);return service.submitFromSession({sessionId,callId:`demo-retry-${draft.id}`},{kind:'supervision',operationKey:'supervision-retry',approved:true,reason:'合成独立监督检查通过。仍等待人工批准发布。'});}};
+service=new ConsoleService({store,connectors:{github:connector('github'),bilibili:connector('bilibili')},executor,workspaces:{resolve:async()=>({path:process.cwd()}),list:async()=>[{id:'demo',title:'演示工作区',path:process.cwd(),status:'ok'}]}});
 const gh=await service.saveSource({workspaceId:'demo',name:'Compass 项目',platform:'github',target:'example/compass',types:['pr','issue']});
 const bili=await service.saveSource({workspaceId:'demo',name:'我的视频评论',platform:'bilibili',target:'BV1111111111',types:['comment']});
-await service.refresh(gh.id);await service.refresh(bili.id);changed=true;await service.refresh(gh.id);await service.refresh(bili.id);
+await service.refresh(gh.id,{organize:false});await service.refresh(bili.id,{organize:false});changed=true;await service.refresh(gh.id);await service.refresh(bili.id);
 const api=createHandler(service,req=>{const host=req.headers.host??'';return /^(127\.0\.0\.1|localhost):\d+$/.test(host)&&(!req.headers.origin||req.headers.origin===`http://${host}`)?{}:{rejection:403};});
 const server=createServer(async(req,res)=>{
   if(req.url.startsWith('/api/dsh-message-console/'))return api(req,res);

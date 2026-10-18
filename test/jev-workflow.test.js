@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Context } from '@deepseek-ai/cordis';
@@ -63,15 +63,16 @@ test('pinned Jev 0.3.6 native and custom services drive workflows and durable re
     for (const backend of ['native', 'custom']) await t.test(backend, async t => {
       const store = await new Store(join(directory, backend)).start();
       let published = 0;
-      const workspaces = { async resolve(id) { assert.equal(id, 'fixture-workspace'); return { id }; } };
-      const executor = createDshExecutor(ctx, { createUserMessage: value => value, SessionId: value => value, workspaces });
+      const workspaces = { async resolve(id) { assert.equal(id, 'fixture-workspace'); return { id, path: directory }; } };
+      let service;
+      const executor = createDshExecutor(ctx, { createUserMessage: value => value, SessionId: value => value, workspaces, service:()=>service });
       const connector = {
         status: () => ({ ready: true, canPublish: true }),
         async fetch() { return { complete: true, items: [{ remoteId: 'comment:1', kind: 'comment', title: '合成评论', body: '仅供离线测试的中文问题', payload: { comments: [] } }] }; },
         async getItem() { return (await this.fetch()).items[0]; },
         async publish() { published++; return { remoteId: 'synthetic-publication' }; },
       };
-      const service = new ConsoleService({ store, connectors: { bilibili: connector }, executor, workspaces });
+      service = new ConsoleService({ store, connectors: { bilibili: connector }, executor, workspaces });
       try {
         const profile = backend === 'native' ? 'ordinary-profile' : 'custom-profile';
         await service.configure({ decisionProfile: profile, writerProvider: 'offline', writerModel: 'writer-model', decisionConfidence: .8, decisionMargin: .2 });
@@ -82,19 +83,22 @@ test('pinned Jev 0.3.6 native and custom services drive workflows and durable re
           executor.runAgent = async input => {
             roles.push(input.role);
             assert.equal(input.workspaceId, 'fixture-workspace');
-            await input.onSession(`synthetic-${backend}-${current.id}-${input.role}`);
+            const sessionId=`synthetic-${backend}-${current.id}-${input.role}`;
+            service.bindSession({sessionId,runId:input.runId,role:input.role,workspaceId:input.workspaceId,cwd:directory,...(input.draftId?{draftId:input.draftId}:{})});
+            await input.onSession?.(sessionId);
+            let submission;
             if (input.role === 'decision-escalation') {
               assert.deepEqual(input.input.decision.probabilities, ambiguous);
               assert.equal(input.input.decision.confidence, .5, 'routing uses probabilities rather than answer.confidence');
-              return { choice: 'draft', certain: current.certain, reason: '合成升级判断' };
-            }
-            if (input.role === 'supervisor') return { approved: current.id !== 'blocked', reason: '合成独立监督' };
-            return { summary: '合成回复摘要', importance: 1, urgent: false, urgencyReason: null, reason: '合成事实', intervention: 'review', evidence: 'inferred', body: '合成待审核回复' };
+              submission={kind:'decision',operationKey:'decision',choice:'draft',certain:current.certain,reason:'合成升级判断'};
+            } else if (input.role === 'supervisor') submission={kind:'supervision',operationKey:'verdict',approved:current.id!=='blocked',reason:'合成独立监督'};
+            else submission={kind:'analysis',operationKey:'analysis',analysis:{summary:'合成回复摘要',importance:1,urgent:false,urgencyReason:null,reason:'合成事实',intervention:'review',evidence:'inferred'},draftBody:'合成待审核回复'};
+            return service.submitFromSession({sessionId,callId:`synthetic-call-${roles.length}`},submission);
           };
           const source = await service.saveSource({ workspaceId: 'fixture-workspace', name: `${backend}-${current.id}`, platform: 'bilibili', target: 'BV1111111111', types: ['comment'], postHistoryInstruction: '中文可信规则', stageContexts: { decision: { context: 'JEV_ONLY_CONTEXT' }, generation: { context: 'GENERATION_ONLY_CONTEXT' } } });
           await service.refresh(source.id, { organize: false });
           const report = await service.organize(source.id, { scope: 'history' });
-          const state = service.view(), item = state.items.find(value => value.sourceId === source.id), run = state.runs.find(value => value.itemId === item.id);
+          const item = store.item(service.items(source.id,{pageSize:10}).items[0].id), run = store.run(service.runs(item.id,{pageSize:10}).items[0].id);
           assert.equal(ctx.decisionModels.activeCount, 0);
           assert.equal(nativeCalls - beforeNative, backend === 'native' ? 1 : 0);
           assert.equal(customCalls - beforeCustom, backend === 'custom' ? 1 : 0);
@@ -125,15 +129,14 @@ test('pinned Jev 0.3.6 native and custom services drive workflows and durable re
             assert.deepEqual(run.decision.output.usage, backend === 'native' ? { input_tokens: 20, output_tokens: 10 } : { input_tokens: 21, output_tokens: 11 });
             if (current.intervention) assert.equal(item.analysis.intervention, current.intervention);
           }
-          const draft = state.drafts.find(value => value.itemId === item.id);
+          const draft = service.drafts(item.id,{pageSize:10}).items[0];
           assert.equal(draft?.status, current.draft);
           if (draft) {
             assert.equal(draft.approvedAt, undefined);
             await assert.rejects(service.approveAndPublish(draft.id, { version: draft.version, bodyHash: fingerprint('unapproved-body') }), /重新审核|未通过监督/);
           }
           assert.equal(published, 0, 'supervision cannot authorize publication');
-          const persisted = JSON.parse(await readFile(join(directory, backend, 'state.json'), 'utf8'));
-          assert.deepEqual(persisted.runs[run.id].decision, run.decision);
+          assert.deepEqual(service.decision(run.id), run.decision);
         });
       } finally { await service.close(); }
     });

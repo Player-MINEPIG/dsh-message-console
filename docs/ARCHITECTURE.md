@@ -9,7 +9,7 @@ DSH Web slots / uiWorkspace
   HTTP API（宿主 connection.admit）
           │
           ▼
-  ConsoleService ─── Store（单进程 JSON 原子事务）
+  ConsoleService ─── Store（SQLite 按行事务）
        │       │
        │       └── WorkflowExecutor → DSH Agent / Jev / Prompt Assembler
        └── Connectors → GitHub网页 / B站视频接口 / 匿名REST回退
@@ -17,13 +17,13 @@ DSH Web slots / uiWorkspace
 
 平台声明能力；来源保存目标、类型和覆盖配置；内容项保存稳定远端 ID、当前版本、阅读版本、处理状态与会话关联。抓取更新内容版本。首次完整抓取建立已读基线并令 `analyzedVersion` 等于当前版本，以跳过自动分析；此时 `analysis` 仍为空，不代表实际执行过模型。
 
-`src/core.js` 不依赖 DSH。`src/dsh.js` 将工作角色映射到独立原生会话，保存会话引用后才执行；人工背景通过公开 `Session.append` 写入真实来源消息，不伪造模型输出或工具记录。每个版本的人工入口可新建会话，旧会话仍可查看。
+`src/core.js` 不依赖 DSH。`src/dsh.js` 将工作角色映射到独立原生会话，保存会话引用后才执行；人工背景通过公开 `Agent.inject` 准备为待用输入，首次用户发言后才由宿主写入真实消息，不伪造系统头、模型输出或工具记录。每个版本的人工入口可新建会话，旧会话仍可查看。
 
 ## 宿主兼容边界
 
-当前目标为 DSH `0.2.1-rc.2`、Cordis `4.0.5`，Assembler 标准 native 后端固定到 `1.1.2` 源码提交 `21183e18c9e8e7f7f01fda04b5af4218ce194539` 及锁文件完整性摘要。该补丁对装配、历史策略与 request-token API 显式要求 DSH owner 认证，保留 Host、Origin、JSON 和桌面 CSRF token 检查。包的 `engines.dsh`、DSH peer 和锁文件共同声明这一组合，不承诺旧宿主继续兼容。此适配不修改插件状态格式、不迁移真实历史，也不修改宿主核心。
+当前目标为 DSH `0.2.1-rc.2`、Cordis `4.0.5`，Assembler 标准 native 后端固定到 `1.1.2` 源码提交 `21183e18c9e8e7f7f01fda04b5af4218ce194539` 及锁文件完整性摘要。该补丁对装配、历史策略与 request-token API 显式要求 DSH owner 认证，保留 Host、Origin、JSON 和桌面 CSRF token 检查。包的 `engines.dsh`、DSH peer 和锁文件共同声明这一组合，不承诺旧宿主继续兼容。插件将旧 JSON 业务数据迁移到 SQLite，DSH 原生会话历史仍由宿主保存，不迁移或重写真实会话事件，也不修改宿主核心。
 
-新版宿主将工作目录等动态事实放在 runtime context。Assembler 兼容层保留旧文本策略的 `cwd` 变量，并保留宿主必需上下文；插件自身仍通过公开 `agents.create`、`followup`、`whenIdle`、`sessions.flush` 和 `Session.append` 驱动独立角色。尾部 PHI 使用真实 user/pre-step 消息。JSONL 持久化插件的新版入口是命名 `apply`，离线集成测试按模块加载，不再假定 default 导出。
+新版宿主将工作目录等动态事实放在 runtime context。Assembler 兼容层保留旧文本策略的 `cwd` 变量，并保留宿主必需上下文；插件自身仍通过公开 `agents.create`、`followup`、`whenIdle`、`sessions.flush` 和 `inject` 驱动独立角色。尾部 PHI 使用真实 user/pre-step 消息。JSONL 持久化插件的新版入口是命名 `apply`，离线集成测试按模块加载，不再假定 default 导出。
 
 模型目录继续使用 `llm.listProviders()` 和异步 `listModels(provider)`，只返回 provider/id/name。Jev 使用独立的 `decisionModels.config()` 白名单投影及 `ask()`；不因目录探测读取或返回密钥。第三方提供商的 peer/宿主兼容性由其自身声明，不能通过本插件的目录适配绕过。
 
@@ -72,13 +72,13 @@ Release 仅在 Cookie 缺失或过期、HTTP 401、同源登录跳转或页面�
 
 ## 发布状态
 
-`ready` 表示监督通过且仍待用户批准；`blocked` 表示监督拒绝。内容变化会将旧草稿标为 `stale`。用户批准绑定正文指纹与内容版本，发布前再读远端；写入 `sending` 后才请求平台。成功为 `sent`；确定未发送可回到 `ready`；无法确认则 `unknown`，重启后的 `sending` 也变为 `unknown`。
+`pending-supervision` 表示工具已存稿、独立监督尚未成功完成。`ready` 表示监督通过且仍待用户批准；`blocked` 表示监督拒绝。正文创建后不可修改；改稿创建新 `draftId`，被明确替换的旧稿标为 `superseded`，新稿重新等待监督。内容变化会将旧草稿标为 `stale`。用户批准绑定正文指纹与内容版本，发布前再读远端；写入 `sending` 后才请求平台。成功为 `sent`；确定未发送可回到 `ready`；无法确认则 `unknown`，重启后的 `sending` 也变为 `unknown`。
 
 本版没有自动发布开关。平台内容、提示词中的要求以及监督判断都不能代替用户发布批准。
 
 ## 已知实现范围
 
-当前完整快照与单文件持久化面向个人小规模使用；高频、大量来源需要后续增量同步和存储扩展。平台采集与模型执行的失败分别保留，不以模型成功掩盖采集过期。真实Cookie采集已验证；真实模型账号调用、全部目标插件共存和实际发布仍须完成集成验收。
+SQLite 将日常状态更新限制在相关行及来源计数投影，列表、评论及工作历史由服务端分页。来源配置数量仍按个人规模处理，连接器仍以完整批次提交；字面子串搜索和深页 OFFSET 也可能随单来源内容量增长。当前实现不保证任意规模恒定开销。平台采集与模型执行的失败分别保留，不以模型成功掩盖采集过期。真实Cookie采集已验证；真实模型账号调用、全部目标插件共存和实际发布仍须完成集成验收。
 
 ## 宿主界面与会话归属
 
@@ -88,7 +88,7 @@ Release 仅在 Cookie 缺失或过期、HTTP 401、同源登录跳转或页面�
 
 B站来源使用BV/av视频ID或视频链接。每个来源保存独立context、materials和postHistoryInstruction，资料可以是显式文本或工作区内非隐藏文件；解析符号链接后再次检查目录边界。资料内容摘要参与contextVersion，变化后旧审核失效。
 
-DSH通过Assembler native前置system定义任务与不可信输入边界，pre-step追加user角色的post-history提醒；这是宿主支持的真实尾部消息，并非system优先级。每个角色自己的历史持久化。Jev独立请求中同样加入可信规则。平台正文仅进入数据，不参与构造可信尾部指令。此机制降低提示词注入风险，不能保证模型永不受影响；工作Agent不开放工具，对外发布仍必须单独批准。
+DSH通过Assembler native前置system定义任务与不可信输入边界，pre-step追加user角色的post-history提醒；这是宿主支持的真实尾部消息，并非system优先级。每个角色自己的历史持久化。Jev独立请求中同样加入可信规则。平台正文仅进入数据，不参与构造可信尾部指令。此机制降低提示词注入风险，不能保证模型永不受影响；工作 Agent 使用宿主标准工具与两个会话绑定的业务工具，对外发布仍必须单独批准。
 
 ## 来源输入合同
 
@@ -103,7 +103,7 @@ DSH通过Assembler native前置system定义任务与不可信输入边界，pre-
 
 `src/input-assembly.js` 是浏览器与服务端共享的纯函数模块。`assembleInput(source, item, { language, stage })` 生成有序 `blocks`，每个块具有 `key`、`label` 与 `value`。`serializeInput(input, extras)` 将块和当前步骤附加数据序列化。资料按 `resolvedMaterials` 的数组顺序装入，不重复装入原始文件配置。
 
-来源信息块包含名称、平台、目标、简介、标签及关注规则。当前内容块白名单保留采集的 ID、类型、标题、正文、URL、完整 payload、内容版本、变化时间及前版原文，不携带插件内部 analysis、draft、sessions 或个人处理状态。Agent 的真实 user 消息外层保持 `{ role, input }`。升级判断的 `decision` 和监督的 `draft` 各追加一次。人工背景通过同一组装函数写入真实 user 历史。Jev 的 `state` 使用相同顺序的块，可信 PHI 留在问题 `instructions`。数据块顺序不会改变消息角色或提升平台内容的可信级别。
+来源信息块包含名称、平台、目标、简介、标签及关注规则。当前内容块白名单保留采集的 ID、类型、标题、正文、URL、完整 payload、内容版本、变化时间及前版原文，不携带插件内部 analysis、draft、sessions 或个人处理状态。Agent 的真实 user 消息外层保持 `{ role, input }`。升级判断的 `decision` 和监督的 `draft` 各追加一次。人工背景通过同一组装函数准备为待用输入，由宿主在首次用户轮接受为真实 user 历史。Jev 的 `state` 使用相同顺序的块，可信 PHI 留在问题 `instructions`。数据块顺序不会改变消息角色或提升平台内容的可信级别。
 
 `POST /api/dsh-message-console/sources/preview` 接收 `{ source, sourceId?, itemId?, stage? }`。`source` 是尚未保存的来源表单，另可传 `stage`，默认 `generation`，验证与保存共用相同合同。已有来源必须匹配平台、目标及类型。内容项只从服务端状态中读取，并验证归属。新来源无 `sourceId` 时不能指定实际内容项。预览经 `workspaces.resolve` 和 `prepareSource` 解析显式文件，沿用隐藏目录、符号链接、文本类型及大小限制，不改变状态。
 
@@ -113,9 +113,9 @@ DSH通过Assembler native前置system定义任务与不可信输入边界，pre-
 
 ## 总览统计与导航
 
-`src/dashboard.js` 统一计算来源与平台统计。综合分数为当前版本重要性乘 10，加上有依据的紧急性修正 3，再以需要处理数、未读数、`changedAt` 和稳定 ID 排序。最近更新模式以 `changedAt` 为首键，`fetchedAt` 只用于显示抓取状态。旧内容版本的分析不参与摘要、重要性或紧急性判断。
+`src/dashboard.js` 保留当前分析、优先级和需处理判定的纯规则，供 Store 更新内容投影。来源计数由同一事务维护，平台统计在后端基于来源摘要计算，前端不读取全库内容重新聚合。综合分数为当前版本重要性乘 10，加上有依据的紧急性修正 3，再以需要处理数、未读数、`changedAt` 和稳定 ID 排序。最近更新模式以 `changedAt` 为首键，`fetchedAt` 只用于显示抓取状态。旧内容版本的分析不参与摘要、重要性或紧急性判断。
 
-未读数与需要处理数均按内容项 ID 去重。待处理和暂后处理会计入；尚未关闭的 `ready`、`blocked`、`stale`、`sending`、`unknown` 草稿也会计入同一内容项。“本轮已处理”阻止旧人工介入分析重新产生待处理计数，但不能代替关闭尚存草稿。
+未读数与需要处理数均按内容项 ID 去重。待处理和暂后处理会计入；尚未关闭的 `pending-supervision`、`ready`、`blocked`、`stale`、`sending`、`unknown` 草稿也会计入同一内容项。“本轮已处理”阻止旧人工介入分析重新产生待处理计数，但不能代替关闭尚存草稿。
 
 `src/client.jsx` 用单个页面状态选择总览、全部平台、全部来源、平台来源、来源详情、全局配置、新建或编辑来源。插件没有内部侧边栏。`src/dashboard-view.jsx` 展示列表和内容项，`src/source-editor.jsx` 负责来源表单及可排序的真实输入预览，`src/ui-shared.jsx` 保存通用字段与请求组件。
 
@@ -176,7 +176,7 @@ DSH通过Assembler native前置system定义任务与不可信输入边界，pre-
 
 `assembleInput` 将共用上下文和当前阶段上下文装入原有 `context` 块，将共用资料和当前阶段资料按顺序装入原有 `materials` 块，保留四块可调整顺序。没有阶段专属上下文时保留旧的共用文字形状。其他阶段的背景不进入请求；原始内容也不携带上轮分析和草稿，避免通过旧结果间接串入专属资料。
 
-Jev 使用 `decision`，一次低置信升级使用 `escalation`，各内容类型的生成和分析使用 `generation`，独立监督使用 `supervision`。人工会话明确使用 `generation`，创建时写入真实背景但不唤醒模型。角色指令、尾部 PHI 与可信边界保持固定。预览使用同一装配函数，升级 decision 和监督 draft 展示明确的占位，不能视为真实执行输出。
+Jev 使用 `decision`，一次低置信升级使用 `escalation`，各内容类型的生成和分析使用 `generation`，独立监督使用 `supervision`。人工会话明确使用 `generation`，创建时准备待用背景但不唤醒模型。角色指令、尾部 PHI 与可信边界保持固定。预览使用同一装配函数，升级 decision 和监督 draft 展示明确的占位，不能视为真实执行输出。
 
 ## 终止错误与冷会话目录
 
@@ -186,6 +186,81 @@ Jev 使用 `decision`，一次低置信升级使用 `escalation`，各内容类�
 
 `AgentHandle.dispose()` 会释放实时 Agent 和附着 Session，但不会删除已持久化历史。当前宿主的 `session/disposed` 会向前端发布 removed，普通会话行随即消失，真实冷目录仍可从 `sessionPersistence` 和 `sessionQuery` 读取。Session ID 的 `dmc-` 前缀不是持久列表限制，不更换已有身份。
 
-客户端 `apply(ctx)` 的插件生命周期持有 `src/session-directory.js`，通过公开 `ctx.sessions.refresh()` 更新宿主共享目录。`GET session-directory` 仅返回本插件已结束及人工会话的 ID；运行中角色暂不纳入。客户端每五秒读取这份小清单，签名未变时不更换监听，也不因来源状态轮询重复刷新。
+客户端 `apply(ctx)` 的插件生命周期持有 `src/session-directory.js`，通过公开 `ctx.sessions.refresh()` 更新宿主共享目录。`GET session-directory?after=0&limit=100` 返回 `{ changes: [{ sessionId, eligible }], next, hasMore }`，每页最多 200 条。每个身份保存最新变化序号，已结束与人工会话具备目录恢复资格。客户端分页追平后保存 `after=next`，每五秒读取增量；空响应不重新遍历历史身份集合，也不更换监听。
 
-监听使用共享目录的真实 `ids` 判断缺失。晚到的 removed 帧可能覆盖进行中的目录拉取，因此缺失的一轮最多进行两次拉取；确实不存在的身份或读取错误不会循环重试。清单读取失败保留之前的 ID 和监听。插件卸载时清理定时器与订阅，忽略尚未完成的响应。主视图切到宿主会话不会停止这项恢复。整个过程不创建新 Session、不重放或合并历史，也不将普通工作会话伪装成子 Agent。
+监听使用共享目录的真实 `ids` 判断缺失。晚到的 removed 帧可能覆盖进行中的目录拉取，因此缺失的一轮最多进行两次拉取；确实不存在的身份或读取错误不会循环重试。增量读取失败保留之前的身份集合、已追平游标和监听。插件卸载时清理定时器与订阅，忽略尚未完成的响应。主视图切到宿主会话不会停止这项恢复。整个过程不创建新 Session、不重放或合并历史，也不将普通工作会话伪装成子 Agent。
+
+## Agent 工具和结果收据
+
+`src/agent-tools.js` 在真实 Agent 创建或恢复时查询持久绑定，再注册 scoped 工具。绑定先于 `agents.create` 保存，固定 `runId`、来源、内容版本、背景版本、角色、工作区及 canonical `cwd`。监督还固定精确 `draftId` 与正文 hash。工具身份来自实际执行上下文，模型参数不能指定来源、run、角色或会话。
+
+新会话显式解析并挂载宿主已安装的 `standard`，通过会话级权限预设固定 `workspace-write` 和 `ask`，不继承更宽的全局默认值，也不更改全局配置。冷恢复不重设用户后来选择的权限。`dmc_submit_result` 执行前检查实际 sandbox mode 和标准模式的 plan 状态，在提交事务前再次检查；只读、计划中或无法解析权限时拒绝写业务结果。`dmc_read_item` 仍可只读查询。DSH 标准文件权限与发布审核分别执行。
+
+`assertStorageOutsideWorkspace` 在创建会话前和冷恢复工具前，解析存储目录与工作区的 canonical 路径，并与工作区、`/tmp`、`os.tmpdir()` 的写入范围比较。存储目录处于任一可写根内时拒绝启用业务会话，符号链接同样按实际目标比较。数据库继续由领域事务写入，模型不通过文件工具修改数据库。标准 sandbox 的模式只约束文件写入，不构成网络隔离或工作区外读取限制。
+
+人工会话的背景使用 `Agent.inject` 放进 `next-step` 待用队列。`AgentHandle.dispose()` 会清空当前队列，因此 `agent/created` 的串行监听在恢复人工会话时，调用只读 `sessionBackground(sessionId)`，从持久 run 快照重建尚未接受的背景。监听先查实际 `user/message` 与待用队列，已经进入历史或已在队列的背景不再加入。人工会话的 scoped `agent/pre-step` 只把本插件背景移到当前用户输入之前，系统消息仍由宿主创建。首次用户请求因而保持系统、背景、用户的顺序，也不会产生仅处理背景的额外模型轮。冷静态查询保留已有真实历史，尚未执行的背景保持待用身份。
+
+Web `openSession` 打开会话后使用宿主 history follow；DSH 在首个冷 snapshot 后提升为 live Agent，经过同一恢复监听。源码路径与实际 `agents.resume` 的恢复行为已核对；本轮宿主测试使用离线适配器，不把它表述为完整 Web 与真实账号验收。
+
+查询工具以 `section` 区分资源，列表不返回全量原文。
+
+```js
+// 参数中的 ID 和 version 均来自此前的工具返回值。
+dmc_read_item({ section: 'items', q: '关键词', page: 1, pageSize: 10 })
+dmc_read_item({ itemId, version, section: 'comments', page: 1, pageSize: 10 })
+dmc_read_item({ itemId, version, section: 'comment', commentId, offset: 0, length: 16000 })
+dmc_read_item({ itemId, version, section: 'body', offset: 0, length: 16000 })
+```
+
+缺省内容项及版本来自绑定的 run。同来源其他项可显式查询，不能改变原写目标。正文继续使用精确版本与返回的 `nextOffset`，直到 `complete`。`section: 'context'` 和 `'materials'` 使用本轮来源快照及当前角色的装配阶段，不把其他阶段的专属资料混入请求。
+
+提交工具按绑定角色选择 schema。
+
+| 角色 | 提交数据 |
+| --- | --- |
+| writer、review、investigate | `kind: 'analysis'`、`operationKey`、`analysis` 及可选 `draftBody` |
+| decision-escalation | `kind: 'decision'`、`operationKey`、`choice`、`certain`、`reason` |
+| supervisor | `kind: 'supervision'`、`operationKey`、`approved`、`reason` |
+| human | `kind: 'draft'`、`operationKey`、`body`，替换时附 `replacesDraftId`、`bodyHash` |
+
+提交在短事务内验证绑定、输入版本、背景、角色和替换条件，保存结果、草稿、审计及收据。同一会话的相同操作键与内容返回原收据，内容不同时拒绝；自动阶段已有结果后不能换键重复终结。工具记录保留真实 `callId`。自动提交可结束当前轮，人工存稿后仍可继续讨论。
+
+DSH 运行器等待 idle、flush 后，通过 `requireSubmission(sessionId)` 读取已保存的收据。缺少收据时明确失败，不解析最终助手 JSON 兜底。Jev 调用和上下文不足等系统分流仍由系统保存，保留真实输入、输出和错误，不伪造 Agent 工具调用。提交成功后的会话失败不删除已落稿，也不把失败会话记成成功。
+
+## 按行存储与迁移
+
+`src/store.js` 独占 SQLite、迁移、查询与短事务。来源、内容、不可变版本、评论、runs、不可变草稿、会话绑定、幂等收据和审核记录分别存行；设置及小型阶段结果仍可用 JSON 列。没有整库 `read/change/view` 兼容入口，HTTP 也不提供 `GET state`。
+
+内容索引覆盖来源与优先级排序、更新时间、未读和需处理筛选，并为有依据的紧急项及可展示摘要建立查询索引。评论以内容版本和 ordinal 排序，runs 以内容项和时间排序，会话目录以单调变化序号分页。`markRead` 和个人处理更新只影响当前项及来源统计，不解码全库 payload。正文及评论原文完整持久化，不以列表摘录替代版本快照。版本的轻量 metadata 投影保存完整性提示、diff 长度和视频标题等，列表及头信息不再反复解析大 payload。分块查询只返回所选正文；diff 和视频简介仍需在 SQLite 内解析该项 payload，切片和长度直接使用 SQLite 内置 substr/length，只有返回的片段进入 JavaScript。
+
+旧 `state.json` 首次导入前保留原文件并复制到 `state.pre-sqlite.json`。迁移保留 ID、版本、hash、Jev 输入输出、错误、会话链接和未知数据，记录旧文件 hash，逐项核对已有字段，并检查实体数、`quick_check` 和 `foreign_key_check`。数据导入与初始化标记在同一事务提交；失败会回滚导入并允许下次重试。未知数据库版本会被拒绝，不会重写其版本号。迁移成功后使用 SQLite 初始化标记，后续启动不会重新导入旧 JSON。旧 previous 缺少 payload 时保留 `complete: false`，不把当前 payload 拼进旧版本。
+
+数据目录使用 `owner.lock` 独占。SQLite 使用 WAL、`synchronous=FULL`、外键约束及私有文件权限。重启将运行中任务标为 `interrupted`，将发送中草稿标为 `unknown`，已存草稿和会话不丢弃，也不自动获得发布授权。
+
+## HTTP 与前端资源边界
+
+所有路径以 `/api/dsh-message-console` 为前缀，保留宿主 owner admission、POST JSON 和来源检查。列表返回统一 `Page`。
+
+```js
+{ items, page, pageSize, total, pageCount, revision }
+```
+
+页码至少 1，页长只接受 10、20、50；空集合仍为第 1 页，超末页由服务端 clamp。内容排序为优先级降序、更新时间降序、ID 升序。`q` 对当前来源标题和完整正文作 trim 后的字面子串查询，百分号、下划线和引号不是查询语法。SQLite 查询使用注册的 JavaScript 大小写归一化函数，保留非 ASCII 文字的既有匹配语义。
+
+| 路径 | 内容与读取时机 |
+| --- | --- |
+| `GET overview` | 来源元信息、统计、平台摘要、设置和忙碌状态，不带来源上下文或工作历史正文 |
+| `GET sources/:id` | 编辑该来源时读取完整配置 |
+| `GET sources/:id/items` | 服务端搜索、筛选及分页，卡片仅带摘录和当前分析 |
+| `GET items/:id?version=` | 指定版本的头信息、状态和正文长度 |
+| `GET items/:id/content` | `section=body/comment/diff/video-description`，精确版本、offset 和 length，最大每块 32000 个 Unicode 码点 |
+| `GET items/:id/comments` | 评论摘要页，含评论 ID 和父子引用，完整评论另取 |
+| `GET items/:id/runs`、`drafts`、`versions` | 相互独立的历史页，真实会话入口随 run.sessions 返回，无 run 的旧人工链接明确标为 legacy-session；不返回内部输入及设置快照 |
+| `GET drafts/:id` | 列表仅含摘录、长度及正文 hash，展开时读取不可变草稿全文 |
+| `GET runs/:id/decision` | 展开 Jev 时读取完整输入输出和错误，不进入轮询 |
+| `POST drafts/:id/supervise` | 携带 `bodyHash`，启动精确草稿的独立监督 |
+| `POST drafts/:id/publish` | 携带内容 `version` 与 `bodyHash`，仍需人工批准 |
+
+`useRemoteResource` 用 generation 与单次请求序号拒绝迟到响应。改变搜索、筛选或页长回到第 1 页，详情选中项独立于列表及轮询。B站详情头只带视频标题和简介长度，视频简介按精确版本逐块读取。正文逐块加载，并明确显示剩余原文；版本、评论、工作记录和草稿各自分页。来源编辑预览也从服务端搜索候选，不从总览读取全部内容。工作区目录只在编辑或展开来源详情时按需读取，不参加五秒轮询。请求错误在对应区域显示，失败不伪装为空列表。
+
+新 run 保存来源快照、初始设置、内容版本，以及本次观察的 changedAt 和 previous 原文引用。内容 hash 再次出现时，当前观察的 previous 可能不同于该 hash 首次出现时的 previous；人工背景恢复和监督重试使用 run 冻结的信息，不随后续抓取漂移。

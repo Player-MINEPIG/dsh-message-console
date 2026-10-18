@@ -38,9 +38,9 @@ test('authenticated catalog endpoints separate provider profiles from lazy model
  assert.equal((await get('/api/dsh-message-console/catalog')).decisionProfiles[0].id,'jev');assert.deepEqual(seen,[]);assert.equal((await get('/api/dsh-message-console/catalog/models/sub'))[0].provider,'sub');assert.deepEqual(seen,['sub']);
 });
 
-test('authenticated session directory exposes only the service identity inventory',async()=>{
- const { Readable }=await import('node:stream');const handler=createHandler({sessionDirectory:()=>({sessionIds:['original-id']})},()=>({}));
- const req=Readable.from([]);Object.assign(req,{method:'GET',url:'/api/dsh-message-console/session-directory',headers:{}});let code,result;await handler(req,{writeHead(value){code=value;},end(text){result=JSON.parse(text);}});assert.equal(code,200);assert.deepEqual(result,{sessionIds:['original-id']});
+test('authenticated session directory dispatches the incremental cursor and bounded limit',async()=>{
+ const { Readable }=await import('node:stream');let received;const value={changes:[{sessionId:'original-id',eligible:true}],next:8,hasMore:false};const handler=createHandler({sessionDirectory:query=>{received=query;return value;}},()=>({}));
+ const req=Readable.from([]);Object.assign(req,{method:'GET',url:'/api/dsh-message-console/session-directory?after=4&limit=100',headers:{}});let code,result;await handler(req,{writeHead(status){code=status;},end(text){result=JSON.parse(text);}});assert.equal(code,200);assert.deepEqual(result,value);assert.deepEqual(received,{after:'4',limit:'100'});
 });
 
 test('source suggestion endpoint requires owner admission and JSON CSRF headers and dispatches before source IDs without saving',async()=>{
@@ -49,4 +49,15 @@ test('source suggestion endpoint requires owner admission and JSON CSRF headers 
  async function call(method,headers){const req=Readable.from([Buffer.from(JSON.stringify({input:'o/r',types:['release']}))]);Object.assign(req,{method,url:'/api/dsh-message-console/sources/suggest',headers});let code,data;await handler(req,{writeHead(value){code=value;},end(value){data=JSON.parse(value);}});return {code,data};}
  assert.equal((await call('POST',{})).code,401);assert.equal((await call('POST',{'x-test-owner':'1','content-type':'application/json'})).code,403);assert.equal((await call('GET',{'x-test-owner':'1'})).code,405);
  const result=await call('POST',{'x-test-owner':'1','content-type':'application/json','x-dsh-message-console':'1'});assert.equal(result.code,200);assert.equal(result.data.fields.name,'o/r');assert.equal(calls,1);assert.equal(writes,0);
+});
+
+test('read endpoints dispatch bounded page, precise content version, draft and decision requests without legacy state',async()=>{
+ const {Readable}=await import('node:stream');const calls=[];
+ const service={overview:query=>({sources:[],platforms:[],revision:1}),items:(id,query)=>{calls.push({id,query});return {items:[],page:1,pageSize:10,total:0,pageCount:1,revision:1};},content:(id,query)=>{calls.push({id,query});return {version:query.version,text:'原文',offset:0,nextOffset:null,total:2,complete:true};},draft:id=>({id,body:'saved',bodyHash:'hash',status:'pending-supervision'}),decision:id=>({input:{state:id},output:{saved:true}})};
+ const handler=createHandler(service,()=>({}));
+ async function get(path){const req=Readable.from([]);Object.assign(req,{method:'GET',url:'/api/dsh-message-console/'+path,headers:{}});let status,result;await handler(req,{writeHead(code){status=code;},end(text){result=JSON.parse(text);}});return {status,result};}
+ assert.equal((await get('overview')).status,200);assert.equal((await get('state')).status,404);
+ const page=await get('sources/source/items?page=2&pageSize=20&filter=unread&q=%25');assert.equal(page.status,200);assert.deepEqual(calls[0],{id:'source',query:{page:'2',pageSize:'20',filter:'unread',q:'%'}});
+ const content=await get('items/source%3Ac/content?version=old&section=comment&commentId=123&offset=0&length=16');assert.equal(content.result.text,'原文');assert.equal(calls[1].id,'source:c');assert.equal(calls[1].query.version,'old');
+ assert.equal((await get('drafts/draft')).result.body,'saved');assert.equal((await get('runs/run/decision')).result.input.state,'run');assert.equal((await get('items/id/content/unexpected')).status,404);
 });

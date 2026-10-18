@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { request } from './api.js';
 import { ModelSettingField } from './model-selector.jsx';
-export const labels = { github: 'GitHub', bilibili: '哔哩哔哩', issue: 'Issue', pr: 'Pull request', comment: '评论对话', release: 'Release', ready: '等待你审核', blocked: '监督已拦截', stale: '上下文已变化', sent: '已发布', sending: '发送中', unknown: '结果待核实', dismissed: '暂不发布', none: '无需处理', pending: '待处理', later: '暂后处理', done: '本轮已处理' };
+export const labels = { github: 'GitHub', bilibili: '哔哩哔哩', issue: 'Issue', pr: 'Pull request', comment: '评论对话', release: 'Release', 'pending-supervision': '等待独立监督', superseded: '已被新稿替换', ready: '等待你审核', blocked: '监督已拦截', stale: '上下文已变化', sent: '已发布', sending: '发送中', unknown: '结果待核实', dismissed: '暂不发布', none: '无需处理', pending: '待处理', later: '暂后处理', done: '本轮已处理' };
 export const time = value => value ? new Date(value).toLocaleString('zh-CN', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '尚未执行';
 export const safeURL = value => { try { const url = new URL(value); return ['https:','http:'].includes(url.protocol) ? url.href : undefined; } catch { return undefined; } };
 export { request } from './api.js';
@@ -45,4 +46,34 @@ export function MoveButtons({index,length,onMove,label}) {
 }
 export function moveEntry(items,index,direction) {
   const next=[...items];[next[index],next[index+direction]]=[next[index+direction],next[index]];return next;
+}
+
+export function useRemoteResource(path, { revision = 0, pollMs = 0 } = {}) {
+  const [resource, setResource] = useState({ path, data: null, error: '', loading: Boolean(path) });
+  const generation = useRef(0);
+  useEffect(() => {
+    const current = ++generation.current;
+    let requestNumber = 0;
+    if (!path) { setResource({ path, data: null, error: '', loading: false }); return; }
+    setResource(previous => ({ path, data: previous.path === path ? previous.data : null, error: '', loading: true }));
+    const pull = async () => {
+      const attempt = ++requestNumber;
+      try {
+        const data = await request(path);
+        if (generation.current === current && attempt === requestNumber) setResource({ path, data, error: '', loading: false });
+      } catch (error) {
+        if (generation.current === current && attempt === requestNumber) setResource(previous => ({ ...previous, error: error.message, loading: false }));
+      }
+    };
+    void pull();
+    const timer = pollMs > 0 ? setInterval(pull, pollMs) : null;
+    return () => { generation.current++; if (timer !== null) clearInterval(timer); };
+  }, [path, revision, pollMs]);
+  return resource.path === path ? resource : { data: null, error: '', loading: Boolean(path) };
+}
+export function ResourceError({error}) { return error ? <p className="dmc-error" role="alert">{error}</p> : null; }
+export function ListPagination({pagination,pageSize,onPage,onPageSize,label='内容分页'}) {
+  const {page,pageCount,total}=pagination;
+  const size=pageSize??pagination.pageSize, start=total?(page-1)*size+1:0, end=Math.min(page*size,total);
+  return <nav className="dmc-pagination" aria-label={label}><div className="dmc-pagination-range"><span aria-live="polite">{start}–{end} / {total} 条</span>{onPageSize&&<label>每页 <select aria-label={`${label}每页条数`} value={size} onChange={e=>onPageSize(Number(e.target.value))}>{[10,20,50].map(value=><option key={value} value={value}>{value} 条</option>)}</select></label>}</div><div className="dmc-pagination-actions"><button type="button" disabled={page===1} onClick={()=>onPage(page-1)}>上一页</button><span>第 {page} / {pageCount} 页</span><button type="button" disabled={page===pageCount} onClick={()=>onPage(page+1)}>下一页</button></div></nav>;
 }

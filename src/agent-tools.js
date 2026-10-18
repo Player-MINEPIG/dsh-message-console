@@ -1,0 +1,116 @@
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { serializeInput } from './input-assembly.js';
+import { realpath } from 'node:fs/promises';
+import { relative, isAbsolute, sep } from 'node:path';
+import { tmpdir } from 'node:os';
+
+const string = { type: 'string' };
+const boolean = { type: 'boolean' };
+const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
+const analysis = object({
+  summary: string, importance: { type: 'integer', enum: [0, 1, 2, 3] }, reason: string,
+  urgent: boolean, urgencyReason: { oneOf: [string, { type: 'null' }] },
+  intervention: { type: 'string', enum: ['none', 'human', 'review'] },
+  evidence: { type: 'string', enum: ['confirmed', 'inferred', 'insufficient'] },
+});
+const submitSchemas = {
+  writer: object({ kind: { type: 'string', enum: ['analysis'] }, operationKey: string, analysis, draftBody: { oneOf: [string, { type: 'null' }] } }, ['kind', 'operationKey', 'analysis']),
+  'decision-escalation': object({ kind: { type: 'string', enum: ['decision'] }, operationKey: string, choice: { type: 'string', enum: ['ignore', 'draft', 'human'] }, certain: boolean, reason: string }),
+  supervisor: object({ kind: { type: 'string', enum: ['supervision'] }, operationKey: string, approved: boolean, reason: string }),
+  human: object({ kind: { type: 'string', enum: ['draft'] }, operationKey: string, body: string, replacesDraftId: string, bodyHash: string }, ['kind', 'operationKey', 'body']),
+};
+submitSchemas.review = submitSchemas.investigate = submitSchemas.writer;
+
+export async function assertStorageOutsideWorkspace(storageDirectory, workspaceDirectory) {
+  const storage = await realpath(storageDirectory);
+  const roots = await Promise.all([workspaceDirectory, '/tmp', tmpdir()].map(path => realpath(path).catch(error => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  })));
+  if (!roots[0]) throw new Error('工作区目录不可用');
+  for (const root of roots.filter(Boolean)) {
+    const path = relative(root, storage);
+    if (!path || (path !== '..' && !path.startsWith('..' + sep) && !isAbsolute(path))) throw new Error('插件存储目录位于 Agent 可写范围内。请选择更具体的工作区，或将存储移到宿主私有目录后重试');
+  }
+}
+
+export function assertAgentWritable(ctx, agent) {
+  const mode = ctx.sandboxPolicy.resolve({ session: agent.session }).mode;
+  if (mode === 'read-only') throw new Error('当前会话为只读模式，不能保存结果；请通过 DSH 切换权限后重试');
+  if (!['workspace-write', 'danger-full-access'].includes(mode)) throw new Error('无法确认会话文件权限，结果未保存');
+  const controller = ctx.agentPresets.serviceFor(agent, 'planMode');
+  if (!controller) throw new Error('标准模式计划服务不可用，结果未保存');
+  const plan = controller.get(agent);
+  if (!plan) throw new Error('无法确认会话计划模式，结果未保存');
+  if (plan?.active || plan?.pending === true) throw new Error('当前会话处于计划模式，不能保存结果；请先通过 DSH 退出计划模式');
+}
+
+const output = { schema: {}, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] };
+const isBackground = message => message.source?.kind === 'dsh-message-console' && message.source?.purpose === 'human-background';
+
+export function queueConversationBackground(agent, input) {
+  const events = agent.session.snapshotEvents();
+  if (events.some(event => event.type === 'user/message' && isBackground(event.data))) return;
+  if (agent.inbox.nextStep.some(isBackground)) return;
+  const original = events.flatMap(event => event.type === 'agent/inbox/spliced' ? event.data.inserted ?? [] : []).find(isBackground);
+  agent.inject(original ?? createUserMessage({
+    source: { kind: 'dsh-message-console', form: 'instructions', purpose: 'human-background' },
+    content: [{ type: 'text', text: serializeInput(input, { instruction: '以下为插件提供的共用背景及生成/分析阶段专属背景，用于人工讨论；等待用户指示，不提前拟稿。' }) }],
+  }));
+}
+
+export async function installAgentTools(ctx, service) {
+  const registrations = new Map();
+  const attach = async agent => {
+    if (registrations.has(agent)) return;
+    const sessionId = String(agent.session.id);
+    const binding = await service.sessionBinding(sessionId, agent.session.header.cwd);
+    if (!binding) return;
+    await assertStorageOutsideWorkspace(service.storageDirectory(), agent.session.header.cwd);
+    const parameters = submitSchemas[binding.role];
+    if (!parameters) throw new Error('工作会话角色不受支持');
+    if (binding.role === 'human') {
+      const background = service.sessionBackground(sessionId);
+      if (background) queueConversationBackground(agent, background.input);
+    }
+    const disposers = [];
+    const actor = exec => {
+      if (exec.agent !== agent || String(exec.agent?.session.id) !== sessionId) throw new Error('工具调用会话与业务绑定不匹配');
+      return exec.agent;
+    };
+    try {
+      if (binding.role === 'human') disposers.push(agent.ctx.on('agent/pre-step', async (_context, next) => {
+        const decision = await next();
+        if (decision.kind === 'reject' || !decision.messages.some(isBackground)) return decision;
+        return { ...decision, messages: [...decision.messages.filter(isBackground), ...decision.messages.filter(message => !isBackground(message))] };
+      }));
+      disposers.push(agent.ctx.tools.register({
+        name: 'dmc_read_item', description: '读取本来源已采集的原文、评论或本轮资料。结果分页；按返回的版本继续读取。',
+        parameters: object({ itemId: string, version: string, section: { type: 'string', enum: ['items', 'item', 'body', 'comments', 'comment', 'context', 'materials', 'diff', 'video-description'] }, q: string, page: { type: 'integer' }, pageSize: { type: 'integer' }, offset: { type: 'integer' }, length: { type: 'integer' }, commentId: string }, []),
+        output, isConcurrencySafe: () => true,
+        execute: (args, exec) => service.readFromSession({ sessionId: String(actor(exec).session.id) }, args),
+      }));
+      disposers.push(agent.ctx.tools.register({
+        name: 'dmc_submit_result', description: '正式保存本轮结果。operationKey 标识一次提交，重试须沿用相同键和内容。保存草稿不授权发布；监督仅评定本轮绑定的草稿。',
+        parameters, output,
+        async execute(submission, exec) {
+          const callingAgent = actor(exec);
+          const assertWritable = () => assertAgentWritable(ctx, callingAgent);
+          assertWritable();
+          const receipt = await service.submitFromSession({ sessionId: String(callingAgent.session.id), callId: String(exec.callId), assertWritable }, submission);
+          if (binding.role !== 'human') exec.concludeTurn();
+          return receipt;
+        },
+      }));
+      registrations.set(agent, () => { for (const dispose of disposers) dispose(); });
+    } catch (error) { for (const dispose of disposers) dispose(); throw error; }
+  };
+  const stopCreated = ctx.on('agent/created', ({ agent }) => attach(agent));
+  const stopDisposed = ctx.on('agent/disposed', ({ agent }) => { registrations.get(agent)?.(); registrations.delete(agent); });
+  ctx.effect(() => () => {
+    stopCreated(); stopDisposed();
+    for (const dispose of registrations.values()) dispose();
+    registrations.clear();
+  });
+  for (const agent of ctx.agents.list()) await attach(agent);
+}

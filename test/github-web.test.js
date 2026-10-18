@@ -103,10 +103,10 @@ test('Release first baseline is read, stable refresh stays read, later notes cha
   t.after(async()=>{await service.close();await rm(dir,{recursive:true,force:true});});
   const saved=await service.saveSource({...source,workspaceId:'workspace',name:'Release source',platform:'github'});
   assert.equal((await service.refresh(saved.id,{organize:false})).fetched,true);
-  let item=service.view().items[0];assert.equal(item.readVersion,item.version);assert.equal(service.view().runs.length,0);
-  const baseline=item.version;await service.refresh(saved.id,{organize:false});assert.equal(service.view().items[0].version,baseline);
-  notes='<p>Updated notes</p>';await service.refresh(saved.id,{organize:false});item=service.view().items[0];assert.notEqual(item.readVersion,item.version);assert.equal(service.view().items.length,1);
-  const version=item.version;broken=true;assert.equal((await service.refresh(saved.id,{organize:false})).fetched,false);assert.equal(service.view().items[0].version,version);
+  let item=service.items(saved.id,{}).items[0];assert.equal(item.readVersion,item.version);assert.equal(service.runs(service.items(saved.id,{}).items[0].id,{}).total,0);
+  const baseline=item.version;await service.refresh(saved.id,{organize:false});assert.equal(service.items(saved.id,{}).items[0].version,baseline);
+  notes='<p>Updated notes</p>';await service.refresh(saved.id,{organize:false});item=service.items(saved.id,{}).items[0];assert.notEqual(item.readVersion,item.version);assert.equal(service.items(saved.id,{}).items.length,1);
+  const version=item.version;broken=true;assert.equal((await service.refresh(saved.id,{organize:false})).fetched,false);assert.equal(service.items(saved.id,{}).items[0].version,version);
 });
 
 const publicHTML=html=>html.replace('<meta name="user-login" content="test">','');
@@ -181,8 +181,8 @@ test('Mixed source keeps Issue/PR authenticated and failed Issue does not commit
   const service=new ConsoleService({store,connectors:{github:connector},executor:{},workspaces:{resolve:async id=>({id})}});
   t.after(async()=>{await service.close();await rm(dir,{recursive:true,force:true});});
   const saved=await service.saveSource({...source,types:['release','issue'],workspaceId:'workspace',name:'Mixed source',platform:'github'});
-  assert.equal((await service.refresh(saved.id,{organize:false})).fetched,false);assert.equal(service.view().sources[0].initialized,false);assert.equal(service.view().items.length,0);
-  assert.equal(calls.at(-1).path,'/o/r/issues');assert.equal(calls.at(-1).cookie,true);assert.equal(service.view().sources[0].metadata,undefined);
+  assert.equal((await service.refresh(saved.id,{organize:false})).fetched,false);assert.equal(service.source(saved.id).initialized,false);assert.equal(service.items(saved.id,{}).items.length,0);
+  assert.equal(calls.at(-1).path,'/o/r/issues');assert.equal(calls.at(-1).cookie,true);assert.equal(service.source(saved.id).metadata,undefined);
 });
 
 test('Public fallback preserves first-read baseline and access metadata, and a later authenticated refresh restores verified identity',async t=>{
@@ -195,7 +195,7 @@ test('Public fallback preserves first-read baseline and access metadata, and a l
   t.after(async()=>{await service.close();await rm(dir,{recursive:true,force:true});});
   const saved=await service.saveSource({...source,workspaceId:'workspace',name:'Public source',platform:'github'});
   assert.equal((await service.refresh(saved.id,{organize:false})).fetched,true);
-  let state=service.view();assert.equal(state.sources[0].metadata.releaseAccess,'public');assert.equal(state.sources[0].fetchError,null);assert.equal(state.sources[0].connection.identity,null);assert.equal(state.items[0].version,state.items[0].readVersion);assert.equal(state.runs.length,0);
-  const version=state.items[0].version;authenticated=true;await service.refresh(saved.id,{organize:false});state=service.view();
-  assert.equal(state.sources[0].metadata.releaseAccess,'cookie');assert.equal(state.sources[0].metadata.releaseFallbackReason,null);assert.equal(state.sources[0].connection.identity.name,'test');assert.equal(state.items[0].version,version);
+  let savedSource=service.source(saved.id),item=service.items(saved.id,{}).items[0];assert.equal(savedSource.metadata.releaseAccess,'public');assert.equal(savedSource.fetchError,null);assert.equal(savedSource.connection.identity,null);assert.equal(item.version,item.readVersion);assert.equal(service.runs(item.id,{}).total,0);
+  const version=item.version;authenticated=true;await service.refresh(saved.id,{organize:false});savedSource=service.source(saved.id);
+  assert.equal(savedSource.metadata.releaseAccess,'cookie');assert.equal(savedSource.metadata.releaseFallbackReason,null);assert.equal(savedSource.connection.identity.name,'test');assert.equal(service.items(saved.id,{}).items[0].version,version);
 });

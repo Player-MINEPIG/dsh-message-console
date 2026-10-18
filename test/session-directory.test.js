@@ -22,7 +22,7 @@ test('missing or unavailable cold rows do not cause repeated refreshes on unchan
 
 test('plugin lifetime sync restores work completed after the view leaves, without refreshing unchanged inventories',async()=>{
  const { syncSessionDirectory }=await import('../src/session-directory.js');const host=directory(async({update})=>update(['original-id']));let finished=[];
- const sync=syncSessionDirectory(host.sessions,async()=>({sessionIds:finished}),{pollMs:0});await sync.pull();assert.equal(host.calls,0);
+ const sync=syncSessionDirectory(host.sessions,async({after})=>({changes:finished.map(sessionId=>({sessionId,eligible:true})),next:after+finished.length,hasMore:false}),{pollMs:0});await sync.pull();assert.equal(host.calls,0);
  finished=['original-id'];await sync.pull();await settle();assert.equal(host.calls,1);assert.deepEqual(host.ids,['original-id']);
  for(let i=0;i<3;i++)await sync.pull();await settle();assert.equal(host.calls,1);
  sync.dispose();host.update([]);await sync.pull();await settle();assert.equal(host.calls,1);
@@ -31,8 +31,20 @@ test('plugin lifetime sync restores work completed after the view leaves, withou
 test('inventory failure keeps the prior watcher and disposal ignores a late inventory response',async()=>{
  const { syncSessionDirectory }=await import('../src/session-directory.js');const host=directory(async({update})=>update(['saved']));let mode='ready',release,errors=0;
  const deferred=new Promise(resolve=>{release=resolve;});
- const sync=syncSessionDirectory(host.sessions,async()=>{if(mode==='error')throw new Error('temporary directory error');if(mode==='late')return deferred;return {sessionIds:['saved']};},{pollMs:0,onError:()=>{errors++;}});
+ const sync=syncSessionDirectory(host.sessions,async()=>{if(mode==='error')throw new Error('temporary directory error');if(mode==='late')return deferred;return {changes:[{sessionId:'saved',eligible:true}],next:1,hasMore:false};},{pollMs:0,onError:()=>{errors++;}});
  await sync.pull();await settle();assert.deepEqual(host.ids,['saved']);
  mode='error';await sync.pull();assert.equal(errors,1);host.update([]);await settle();assert.deepEqual(host.ids,['saved']);assert.equal(host.calls,2);
- mode='late';const pending=sync.pull();await Promise.resolve();sync.dispose();release({sessionIds:['late-id']});await pending;await settle();assert.equal(host.listeners,0);assert.equal(host.calls,2);
+ mode='late';const pending=sync.pull();await Promise.resolve();sync.dispose();release({changes:[{sessionId:'late-id',eligible:true}],next:2,hasMore:false});await pending;await settle();assert.equal(host.listeners,0);assert.equal(host.calls,2);
+});
+
+
+test('incremental inventory drains pages, applies removals and keeps cursors across empty polls',async()=>{
+ const {syncSessionDirectory}=await import('../src/session-directory.js');
+ const host=directory(async({update})=>update(['a','b'])),requests=[];
+ const pages=[{changes:[{sessionId:'a',eligible:true}],next:1,hasMore:true},{changes:[{sessionId:'b',eligible:true}],next:2,hasMore:false},{changes:[],next:2,hasMore:false},{changes:[{sessionId:'a',eligible:false}],next:3,hasMore:false}];
+ const sync=syncSessionDirectory(host.sessions,async args=>{requests.push(args);return pages.shift();},{pollMs:0});
+ await sync.pull();await settle();assert.deepEqual(requests,[{after:0,limit:100},{after:1,limit:100}]);assert.equal(host.calls,1);
+ await sync.pull();await settle();assert.equal(host.calls,1);assert.equal(requests[2].after,2);
+ await sync.pull();await settle();host.update(['b']);await settle();assert.equal(host.calls,1);assert.equal(requests[3].after,2);
+ sync.dispose();assert.equal(host.listeners,0);
 });

@@ -29,7 +29,7 @@ test('description and tags validate and input order changes context version with
 });
 test('Jev state and each agent stage share ordered data blocks, with decision and draft added exactly once',async()=>{
   const calls=[];let jev;
-  const executor=new WorkflowExecutor({decision:async request=>{jev=request;return {answers:{reply:{probabilities:{ignore:.4,draft:.5,human:.1}}}};},runAgent:async request=>{calls.push(request);if(request.role==='decision-escalation')return {choice:'draft',certain:true,reason:'clear'};if(request.role==='supervisor')return {approved:true,reason:'supported'};return {summary:'s',importance:1,reason:'r',urgent:false,urgencyReason:null,intervention:'review',evidence:'confirmed',body:'DRAFT_SENTINEL'};}});
+  const executor=new WorkflowExecutor({decision:async request=>{jev=request;return {answers:{reply:{probabilities:{ignore:.4,draft:.5,human:.1}}}};},runAgent:async request=>{calls.push(request);if(request.role==='decision-escalation')return {result:{choice:'draft',certain:true,reason:'clear'}};if(request.role==='supervisor')return {result:{approved:true,reason:'supported'}};return {result:{summary:'s',importance:1,reason:'r',urgent:false,urgencyReason:null,intervention:'review',evidence:'confirmed'},draftId:'d',draft:{id:'d',body:'DRAFT_SENTINEL'}};}});
   await executor.analyze({source:{...source,postHistoryInstruction:'PHI_ONLY'},item:{kind:'comment',body:'CONTENT_SENTINEL'},settings:{writerProvider:'p',writerModel:'m',decisionConfidence:.8,decisionMargin:.2},recordSession:async()=>{},recordDecision:async()=>{}});
   assert.deepEqual(JSON.parse(jev.state).blocks.map(block=>block.key),source.inputOrder);
   assert.match(jev.questions.reply.instructions,/PHI_ONLY/);assert.doesNotMatch(jev.state,/PHI_ONLY/);
