@@ -6,8 +6,8 @@ import { build } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 const directory=await mkdtemp(join(process.cwd(),'.local/ui-test-'));
-await build({stdin:{contents:"export {Dashboard,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination} from './src/ui-shared.jsx'; export {VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
-const {Dashboard,ItemCard,ReadAllControl,ListPagination,VideoContext,FeedbackDiff,LearningBatch,FeedbackPanel}=await import(join(directory,'ui.mjs'));
+await build({stdin:{contents:"export {Dashboard,SourcePage,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination} from './src/ui-shared.jsx'; export {ConsoleApp,VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
+const {Dashboard,SourcePage,ItemCard,ReadAllControl,ListPagination,ConsoleApp,VideoContext,FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory}=await import(join(directory,'ui.mjs'));
 test.after(()=>rm(directory,{recursive:true,force:true}));
 const render=(Component,props)=>renderToStaticMarkup(React.createElement(Component,props));
 test('overview renders server summaries without any item or draft collection',()=>{
@@ -65,9 +65,26 @@ test('pending proposals require explicit confirmation and show actual session pl
   assert.match(applied,/对应版本的评价已标记为已学习/);assert.doesNotMatch(applied,/确认并应用修改/);
 });
 
-test('learning panel selects a source and explains 50 case batching and explicit application',()=>{
-  const html=render(FeedbackPanel,{sources:[{id:'s',name:'我的视频',platform:'bilibili'}],sourceId:'s',action(){},onBack(){}});
-  assert.match(html,/每次最多整理当前来源的 50 条/);assert.match(html,/应用成功后/);assert.match(html,/我的视频 · 哔哩哔哩/);assert.match(html,/历史学习批次/);
+test('learning records use fixed scope without source selection or batch creation forms',()=>{
+  const sources=[{id:'s',name:'我的视频',platform:'bilibili'}];
+  const source=render(FeedbackPanel,{sources,sourceId:'s',action(){},onBack(){}});
+  assert.match(source,/我的视频 · 学习记录/);assert.match(source,/每批最多 50 条/);assert.match(source,/条未学习评价/);assert.match(source,/确认应用成功后/);assert.match(source,/← 返回来源/);
+  const all=render(FeedbackPanel,{sources,action(){},onBack(){}});
+  assert.match(all,/全部来源的学习批次与提案/);assert.match(all,/历史学习批次/);assert.match(all,/← 返回总览/);assert.doesNotMatch(all,/条未学习评价/);
+  for(const html of [source,all]){assert.doesNotMatch(html,/<select|<form|整理哪个来源|请选择来源|整理本批评价/);}
+});
+
+test('global learning history identifies each source and preserves status, case count and pagination',()=>{
+  const sources=[{id:'s',name:'我的视频',platform:'bilibili'},{id:'g',name:'Compass 项目',platform:'github'}];
+  const html=render(LearningHistory,{sources,history:{items:[{id:'b',sourceId:'s',status:'pending',caseCount:50},{id:'c',sourceId:'g',status:'applied',caseCount:2},{id:'d',sourceId:'deleted',status:'failed',caseCount:1}],page:1,pageSize:10,pageCount:2,total:13},selected:'b',onSelect(){},onPage(){}});
+  assert.match(html,/我的视频 · 哔哩哔哩/);assert.match(html,/Compass 项目 · GitHub/);assert.match(html,/已删除来源 · deleted/);assert.match(html,/等待确认/);assert.match(html,/已应用/);assert.match(html,/50 条案例/);assert.match(html,/dmc-learning-row selected/);assert.match(html,/第 1 \/ 2 页/);
+});
+
+test('learning records share the top navigation and source details own learning actions',()=>{
+  const app=render(ConsoleApp,{}),nav=app.match(/<nav aria-label="看点什么导航">(.*?)<\/nav>/)[1];
+  assert.match(nav,/>总览<\/button>/);assert.match(nav,/>学习记录<\/button>/);assert.match(nav,/>全局配置<\/button>/);assert.match(nav,/>＋ 添加来源<\/button>/);assert.doesNotMatch(app,/整理用户评价/);
+  const source=render(SourcePage,{source:{id:'s',name:'我的视频',platform:'bilibili',connection:{ready:true}},state:{},action(){},onLearn(){},onLearningHistory(){}});
+  assert.match(source,/>整理用户评价<\/button>/);assert.match(source,/>学习记录 ↗<\/button>/);assert.doesNotMatch(source,/评价整理来源|整理哪个来源|请选择来源/);
 });
 
 
