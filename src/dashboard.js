@@ -8,6 +8,18 @@ export function needsHandling(item, drafts = []) {
   if (item.handling === 'done') return false;
   return currentAnalysis(item)?.intervention === 'human';
 }
+export function itemStatus(item,drafts=[]) {
+  return needsHandling(item,drafts)?'handling':item.readVersion!==item.version?'unread':'read';
+}
+export function sourceItems(state,sourceId,{query='',filter='all'}={}) {
+  const search=query.trim().toLowerCase();
+  return state.items.filter(item=>item.sourceId===sourceId&&(filter==='all'||filter==='unread'&&item.readVersion!==item.version||filter==='handling'&&needsHandling(item,state.drafts))&&(!search||`${item.title} ${item.body??''}`.toLowerCase().includes(search)))
+    .sort((a,b)=>itemPriority(b)-itemPriority(a)||(b.changedAt??'').localeCompare(a.changedAt??''));
+}
+export function paginateItems(items,page=1,pageSize=10) {
+  const total=items.length,pageCount=Math.max(1,Math.ceil(total/pageSize)),current=Math.max(1,Math.min(page,pageCount)),offset=(current-1)*pageSize;
+  return {items:items.slice(offset,offset+pageSize),page:current,pageCount,total,start:total?offset+1:0,end:Math.min(offset+pageSize,total)};
+}
 export function summarizeItems(items, drafts = []) {
   const unique = [...new Map(items.map(item => [item.id, item])).values()];
   return {
