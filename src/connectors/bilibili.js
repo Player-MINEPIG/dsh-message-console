@@ -3,6 +3,24 @@ export class BilibiliConnector {
   constructor(transport,{maxPages=200}={}) { this.transport=transport;this.maxPages=maxPages; }
   status(){return this.transport.status('bilibili');}
   async call(path,params,options) { return this.transport.json('bilibili',`https://api.bilibili.com${path}?${new URLSearchParams(params)}`,options); }
+  async metadata(source,options={}){
+    const video=await this.call('/x/web-interface/view',source.target.startsWith('BV')?{bvid:source.target}:{aid:source.target.slice(2)},options);
+    if(typeof video.title!=='string'||typeof video.desc!=='string'||!Number.isSafeInteger(video.aid)||video.aid<1||source.target.startsWith('BV')&&video.bvid!==source.target||source.target.startsWith('av')&&String(video.aid)!==source.target.slice(2))throw new Error('B站视频元信息结构不完整或目标不匹配');
+    const categories=[...new Set([video.tname,video.tname_v2].filter(name=>typeof name==='string'&&name.trim()).map(name=>name.trim()))];
+    let tags=[],note='已读取视频标签及可用分类；未读取评论。';
+    options.signal?.throwIfAborted();
+    try{
+      const rows=await this.call('/x/tag/archive/tags',{aid:String(video.aid)},options);
+      if(!Array.isArray(rows))throw new Error('标签响应结构无效');
+      tags=rows.map(row=>row?.tag_name).filter(name=>typeof name==='string'&&name.trim()).map(name=>name.trim());
+      if(!tags.length)note=categories.length?'平台未返回可用视频标签，已使用视频分类；可手动补充。':'平台未返回可用视频标签或分类，可手动补充标签。';
+    }catch(error){
+      if(options.signal?.aborted)throw options.signal.reason;
+      if(error?.name==='AbortError'||error?.code==='ABORT_ERR')throw error;
+      note=`视频标签读取失败：${String(error?.message??error).slice(0,180)}；已保留标题简介，可手动填写标签。`;
+    }
+    return {name:video.title,description:video.desc,tags:[...tags,...categories],access:'cookie',note};
+  }
   async fetch(source,options={}) {
     const identity=await this.call('/x/web-interface/nav',{},options);
     if(!identity.isLogin)throw new Error('B站Cookie已失效，请重新导入');

@@ -1,5 +1,6 @@
 import {load} from 'cheerio';
 import {CookieAuthenticationError} from './cookies.js';
+import {GitHubConnector} from './github.js';
 const contentText=($,node)=>$(node).text().trim();
 export function parsePage(html,{structured=true,authenticated=true}={}) {
   const $=load(html),login=$('meta[name="user-login"]').attr('content');
@@ -84,7 +85,7 @@ export function parseRelease(page,repo,row) {
   return {remoteId:`release:web-${row.tag}`,kind:'release',title,body:body.text().trim(),url:`https://github.com${canonical.path}`,payload:{tag:row.tag,prerelease:container.find('.Label').toArray().some(e=>$(e).text().trim()==='Pre-release'),publishedAt,contextComplete:true,contextLimit:'已读取Release标题、说明及发布时间；不包含附件内容或关联讨论。'}};
 }
 export class GitHubWebConnector {
-  constructor(transport,{maxPages=100}={}){this.transport=transport;this.maxPages=maxPages;}
+  constructor(transport,{maxPages=100,publicConnector=new GitHubConnector()}={}){this.transport=transport;this.maxPages=maxPages;this.publicConnector=publicConnector;}
   status(){const status=this.transport.status('github');return this.cookieAuthError?{...status,identity:null,reason:'GitHub Cookie需更新；公开Release可匿名读取'}:status;}
   async page(path,options,structured=true,anonymous=false){
     try{
@@ -103,6 +104,14 @@ export class GitHubWebConnector {
       if(!(error instanceof CookieAuthenticationError))throw error;
       return {result:await read(true),access:'public',fallbackReason:error.message};
     }
+  }
+  async metadata(source,options={}){
+    let page;
+    try{page=await this.page(`/${source.target}`,options);}
+    catch(error){if(!(error instanceof CookieAuthenticationError))throw error;return {...await this.publicConnector.metadata(source,options),fallbackReason:error.message};}
+    const repo=page.payload?.codeViewLayoutRoute?.repo,about=page.payload?.sidebarAbout;
+    if(!repo||`${repo.ownerLogin}/${repo.name}`.toLowerCase()!==source.target.toLowerCase()||!about||typeof about.description!=='string'&&about.description!==null||!Array.isArray(about.topics))throw new Error('GitHub仓库元信息结构不完整或目标不匹配');
+    return {name:`${repo.ownerLogin}/${repo.name}`,description:about.description??'',tags:about.topics.map(topic=>topic.name).filter(name=>typeof name==='string'),access:'cookie'};
   }
   async releases(source,options,anonymous=false){
     const rows=new Map();let next=`/${source.target}/releases`,first;

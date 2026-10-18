@@ -26,6 +26,7 @@ export async function apply(ctx, config) {
       fetch: (source, options) => githubBrowser.status().ready ? githubBrowser.fetch(source, options) : github.fetch(source, options),
       getItem: (source, item, options) => githubBrowser.status().ready ? githubBrowser.getItem(source, item, options) : github.getItem(source, item, options),
       publish: (...args) => githubBrowser.publish(...args),
+      metadata: (source,options) => github.metadata(source,options),
     },
     bilibili: new BrowserConnector('bilibili', bridge),
   };

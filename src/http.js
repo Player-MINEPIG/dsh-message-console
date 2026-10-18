@@ -28,6 +28,7 @@ export function createHandler(service, admission) {
       if (req.headers['x-dsh-message-console'] !== '1' || !req.headers['content-type']?.startsWith('application/json')) return send(403, { error: '请求来源校验失败' });
       const body = await jsonBody(req); let result = { ok: true };
       if (path[0] === 'settings' && path.length === 1) await service.configure(body);
+      else if (path.join('/') === 'sources/suggest') result = await service.suggestSource(body);
       else if (path.join('/') === 'sources/preview') result = await service.previewInput(body);
       else if (path[0] === 'sources' && path.length === 1) result = await service.saveSource(body);
       else if (path[0] === 'sources' && path.length === 2) result = await service.saveSource(body, path[1]);

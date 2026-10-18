@@ -42,3 +42,11 @@ test('authenticated session directory exposes only the service identity inventor
  const { Readable }=await import('node:stream');const handler=createHandler({sessionDirectory:()=>({sessionIds:['original-id']})},()=>({}));
  const req=Readable.from([]);Object.assign(req,{method:'GET',url:'/api/dsh-message-console/session-directory',headers:{}});let code,result;await handler(req,{writeHead(value){code=value;},end(text){result=JSON.parse(text);}});assert.equal(code,200);assert.deepEqual(result,{sessionIds:['original-id']});
 });
+
+test('source suggestion endpoint requires owner admission and JSON CSRF headers and dispatches before source IDs without saving',async()=>{
+ const {Readable}=await import('node:stream');let calls=0,writes=0;
+ const handler=createHandler({suggestSource:async body=>{calls++;assert.deepEqual(body,{input:'o/r',types:['release']});return {fields:{name:'o/r'},access:'public'};},saveSource:async()=>{writes++;}},req=>req.headers['x-test-owner']==='1'?{}:{rejection:401});
+ async function call(method,headers){const req=Readable.from([Buffer.from(JSON.stringify({input:'o/r',types:['release']}))]);Object.assign(req,{method,url:'/api/dsh-message-console/sources/suggest',headers});let code,data;await handler(req,{writeHead(value){code=value;},end(value){data=JSON.parse(value);}});return {code,data};}
+ assert.equal((await call('POST',{})).code,401);assert.equal((await call('POST',{'x-test-owner':'1','content-type':'application/json'})).code,403);assert.equal((await call('GET',{'x-test-owner':'1'})).code,405);
+ const result=await call('POST',{'x-test-owner':'1','content-type':'application/json','x-dsh-message-console':'1'});assert.equal(result.code,200);assert.equal(result.data.fields.name,'o/r');assert.equal(calls,1);assert.equal(writes,0);
+});

@@ -3,6 +3,7 @@ import { itemPriority } from './dashboard.js';
 import { prepareSource, postHistoryText } from './source-context.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { validateSource, validateSettings, resolveSettings, valuesOf, PARAMETERS } from './config.js';
+import {suggestionTarget,metadataSuggestions} from './source-suggestions.js';
 
 export const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const nowISO = clock => new Date(clock()).toISOString();
@@ -28,6 +29,12 @@ export class ConsoleService {
   }
   async catalog() { return this.executor.catalog?.() ?? { providers: [], decisionProfiles: [], defaultDecisionProfile: '', providerError: '模型目录不可用', decisionError: 'Jev目录不可用' }; }
   async models(provider) { if (!this.executor.models) throw new Error('宿主模型目录不可用'); return this.executor.models(provider); }
+  async suggestSource(input) {
+    const source=suggestionTarget(input),connector=this.connectors[source.platform];
+    if(!connector?.metadata)throw new Error('此平台尚未配置元信息读取连接，请先导入Cookie；默认指令仍可使用');
+    const metadata=await connector.metadata(source);
+    return {source,fields:metadataSuggestions(metadata,source),access:metadata.access,note:metadata.note??'',fallbackReason:metadata.fallbackReason??null};
+  }
   async configure(settings) { const valid = validateSettings(settings); await this.store.change(state => { state.settings = valid; }); }
   async saveSource(input, id) {
     const valid = validateSource(input);

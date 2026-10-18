@@ -2,11 +2,11 @@ const ROOT = 'https://api.github.com';
 export class GitHubConnector {
   constructor({ request = fetch, account = null, maxPages = 100, timeoutMs = 30_000 } = {}) { Object.assign(this, { request, account, maxPages, timeoutMs }); }
   status() { return { ready: true, canPublish: Boolean(this.account), reason: this.account ? '已连接授权账号' : '仅公开仓库读取；Chrome 网页登录尚未桥接到后台 API' }; }
-  async call(path, { signal, method = 'GET', body, accept = 'application/vnd.github+json' } = {}) {
+  async call(path, { signal, method = 'GET', body, accept = 'application/vnd.github+json', redirect } = {}) {
     const url = new URL(path, ROOT);
     if (url.origin !== ROOT) throw new Error('拒绝跨站 GitHub API 请求');
     signal = signal ? AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs);
-    const response = await this.request(url.href, { method, signal, headers: { Accept: accept, 'X-GitHub-Api-Version': '2026-03-10', ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const response = await this.request(url.href, { method, signal, ...(redirect?{redirect}:{}), headers: { Accept: accept, 'X-GitHub-Api-Version': '2026-03-10', ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     if (!response.ok) {
       const error = new Error(`GitHub 请求失败 (${response.status})`);
       if ([403,429].includes(response.status)) {
@@ -19,6 +19,11 @@ export class GitHubConnector {
     }
     const data = await response.json();
     return { data, link: response.headers.get('link') };
+  }
+  async metadata(source,options={}) {
+    const {data}=await this.call(`/repos/${source.target}`,{...options,redirect:'error'});
+    if(data.full_name?.toLowerCase()!==source.target.toLowerCase()||typeof data.description!=='string'&&data.description!==null)throw new Error('GitHub仓库元信息结构不完整或目标不匹配');
+    return {name:data.full_name,description:data.description??'',tags:[...(Array.isArray(data.topics)?data.topics:[]),...(typeof data.language==='string'?[data.language]:[])],access:'public'};
   }
   async pages(path, options) {
     let next = path; const data = [];
