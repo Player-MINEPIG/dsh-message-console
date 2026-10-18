@@ -62,7 +62,9 @@ bridge.readItem(source, remoteId, options) // 一个内容项
 bridge.publish(source, item, draft, { actionId }) // 发布回执
 ```
 
-配置 `cookieFile` 时使用当前内置的 Cookie 只读连接器：GitHub 登录网页采集 issue/PR，B站视频接口采集根评论与楼中楼。macOS Chrome 导入脚本只读取对应域的白名单 Cookie，落盘权限0600，不随包发布。未配置时仍保留桥接扩展点及匿名 GitHub 回退。内置 Cookie 连接器不提供发布方法。
+配置 `cookieFile` 时使用当前内置的 Cookie 只读连接器：GitHub 登录网页采集 issue、PR 和 release，B站视频接口采集根评论与楼中楼。macOS Chrome 导入脚本只读取对应域的白名单 Cookie，落盘权限0600，不随包发布。未配置时仍保留桥接扩展点及匿名 GitHub 回退。内置 Cookie 连接器不提供发布方法。
+
+Release 使用服务端 HTML 列表与详情，不依赖 Issue 或 PR 的 React 数据。列表按页扫描并按标签去重，只接受同仓库的标签与下一页链接；详情验证仓库、标签和发布时间。采集结束重读首页，首页条目或分页发生变化时整轮失败。网页不提供数值 Release ID，因此使用 `release:web-<tag>` 标识；改用 REST 来源时不能据此与数值 ID 自动合并。说明采集不包含附件内容或关联讨论。
 
 列表完整与上下文完整分别表示：`batch.complete` 验证条目枚举；`payload.contextComplete` 表示该条目的讨论是否完整。GitHub网页尚未遍历全部审查线程，因此PR均标记上下文不完整、仅供查看，不自动审查或拟稿。B站逐页核对计数，根评论与楼中楼总量需与接口声明一致，变化或缺失时不推进基线。
 

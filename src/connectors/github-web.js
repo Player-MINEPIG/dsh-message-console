@@ -1,10 +1,10 @@
 import {load} from 'cheerio';
 const contentText=($,node)=>$(node).text().trim();
-export function parsePage(html) {
+export function parsePage(html,{structured=true}={}) {
   const $=load(html),login=$('meta[name="user-login"]').attr('content');
   if(!login)throw new Error('GitHub未识别到登录身份，请更新Chrome Cookie');
   let payload;
-  try {payload=JSON.parse($('script[data-target="react-app.embeddedData"]').text()).payload;} catch {throw new Error('GitHub页面结构发生变化，未推进采集基线');}
+  if(structured)try {payload=JSON.parse($('script[data-target="react-app.embeddedData"]').text()).payload;} catch {throw new Error('GitHub页面结构发生变化，未推进采集基线');}
   return {$,payload,login};
 }
 export function parseListing(page,kind) {
@@ -40,17 +40,75 @@ export function parsePull(page,repo,row) {
   const complete=false;
   return {remoteId:`pr:${issueId??'web-'+row.number}`,kind:'pr',title:pr.title,body,url:`https://github.com/${repo}/pull/${row.number}`,payload:{number:row.number,head:pr.headSha,state:pr.state,author,comments,contextComplete:complete,contextLimit:'已读取网页讨论与PR diff；未执行代码或测试，未取完整仓库。尚未验证全部审查线程及diff对应提交的一致性，仅展示采集内容，不自动分析。'}};
 }
+function releasePage(page,repo) {
+  const {$}=page;
+  if($('meta[name="route-controller"]').attr('content')!=='releases'||$('meta[name="octolytics-dimension-repository_nwo"]').attr('content')?.toLowerCase()!==repo.toLowerCase())throw new Error('GitHub Release页面或仓库不匹配');
+  return $;
+}
+function releaseLink(href,repo) {
+  const url=new URL(href,'https://github.com'),prefix=`/${repo}/releases/tag/`;
+  if(url.origin!=='https://github.com'||url.username||url.password||url.search||url.hash||!url.pathname.toLowerCase().startsWith(prefix.toLowerCase()))throw new Error('GitHub Release标签链接无效');
+  const tag=decodeURIComponent(url.pathname.slice(prefix.length));
+  if(!tag)throw new Error('GitHub Release标签缺失');
+  return {tag,path:`/${repo}/releases/tag/${encodeURIComponent(tag)}`};
+}
+export function parseReleaseListing(page,repo,pageNumber=1) {
+  const $=releasePage(page,repo),rows=[];
+  $('section[data-release-anchor]').each((i,element)=>{
+    const link=$(element).find('a[href*="/releases/tag/"]').first();
+    if(!link.length)throw new Error('GitHub Release列表结构不完整');
+    rows.push(releaseLink(link.attr('href'),repo));
+  });
+  if(!rows.length&&!/There (?:aren[’']t any|are no) releases here/i.test($('.blankslate').text()))throw new Error('GitHub Release列表不可识别，未推进采集基线');
+  const pagination=$('.pagination'),nextLink=pagination.find('a[rel="next"],a.next_page');let next=null;
+  if(nextLink.length){
+    const url=new URL(nextLink.first().attr('href'),'https://github.com');
+    if(url.origin!=='https://github.com'||url.username||url.password||url.hash||url.pathname.toLowerCase()!==`/${repo}/releases`.toLowerCase()||url.searchParams.get('page')!==String(pageNumber+1)||[...url.searchParams.keys()].some(key=>key!=='page'))throw new Error('GitHub Release分页地址无效');
+    next=`/${repo}/releases?page=${pageNumber+1}`;
+  }else if(pagination.length&&!pagination.find('.next_page.disabled,[aria-label="Next page"][aria-disabled="true"]').length)throw new Error('GitHub Release分页结构不完整');
+  if(!rows.length&&next)throw new Error('GitHub Release分页为空，未推进采集基线');
+  return {rows,next};
+}
+export function parseRelease(page,repo,row) {
+  const $=releasePage(page,repo),canonical=releaseLink($('meta[property="og:url"]').attr('content'),repo);
+  const container=$('h1').filter((i,e)=>$(e).closest('.Box-body').length).closest('.Box-body');
+  const title=container.find('h1').first().text().trim(),publishedAt=container.find('relative-time[datetime]').first().attr('datetime');
+  const assetPath=`/${repo}/releases/expanded_assets/${encodeURIComponent(row.tag)}`;
+  const hasAssets=container.closest('.Box').find('include-fragment[src]').toArray().some(e=>{
+    const url=new URL($(e).attr('src'),'https://github.com');return url.origin==='https://github.com'&&decodeURIComponent(url.pathname)===decodeURIComponent(assetPath);
+  });
+  if(canonical.tag!==row.tag||container.length!==1||!title||!publishedAt||!Number.isFinite(Date.parse(publishedAt))||!hasAssets)throw new Error('GitHub Release详情结构不完整或标签已变化');
+  const body=container.find('[data-test-selector="body-content"]').clone();
+  body.find('br').replaceWith('\n');body.find('p,li,h1,h2,h3,h4,h5,h6,pre,blockquote').append('\n');
+  return {remoteId:`release:web-${row.tag}`,kind:'release',title,body:body.text().trim(),url:`https://github.com${canonical.path}`,payload:{tag:row.tag,prerelease:container.find('.Label').toArray().some(e=>$(e).text().trim()==='Pre-release'),publishedAt,contextComplete:true,contextLimit:'已读取Release标题、说明及发布时间；不包含附件内容或关联讨论。'}};
+}
 export class GitHubWebConnector {
   constructor(transport,{maxPages=100}={}){this.transport=transport;this.maxPages=maxPages;}
   status(){return this.transport.status('github');}
-  async page(path,options){
+  async page(path,options,structured=true){
     const response=await this.transport.get('github',`https://github.com${path}`,{...options,accept:'text/html'});
-    const result=parsePage(await response.text());this.transport.identities.github={name:result.login};return result;
+    const result=parsePage(await response.text(),{structured});this.transport.identities.github={name:result.login};return result;
+  }
+  async releases(source,options){
+    const rows=new Map();let next=`/${source.target}/releases`,first;
+    for(let pageNumber=1;next;pageNumber++){
+      if(pageNumber>this.maxPages)throw new Error('GitHub Release列表超过分页上限，未推进采集基线');
+      const parsed=parseReleaseListing(await this.page(next,options,false),source.target,pageNumber);
+      if(pageNumber===1)first=JSON.stringify(parsed);
+      const before=rows.size;for(const row of parsed.rows)rows.set(row.tag,row);
+      if(parsed.next&&rows.size===before)throw new Error('GitHub Release分页未取得新内容');
+      next=parsed.next;
+    }
+    const items=[];
+    for(const row of rows.values())items.push(parseRelease(await this.page(row.path,options,false),source.target,row));
+    const latest=parseReleaseListing(await this.page(`/${source.target}/releases`,options,false),source.target);
+    if(JSON.stringify(latest)!==first)throw new Error('GitHub Release列表在采集期间发生变化，请重新采集');
+    return items;
   }
   async fetch(source,options={}){
-    if(source.types.includes('release'))throw new Error('Cookie采集暂支持Issue和PR；Release请单独使用公开来源');
     const items=[];
     for(const kind of source.types){
+      if(kind==='release'){items.push(...await this.releases(source,options));continue;}
       const route=kind==='pr'?'pulls':'issues',rows=new Map();let pages=1,total;
       for(let page=1;page<=pages;page++){
         const parsed=parseListing(await this.page(`/${source.target}/${route}?q=is%3A${kind==='pr'?'pr':'issue'}&page=${page}`,options),kind);
@@ -72,7 +130,7 @@ export class GitHubWebConnector {
         items.push(item);
       }
     }
-    return {complete:true,items,metadata:{issues:items.filter(x=>x.kind==='issue').length,prs:items.filter(x=>x.kind==='pr').length,limitedContexts:items.filter(x=>!x.payload.contextComplete).length}};
+    return {complete:true,items,metadata:{issues:items.filter(x=>x.kind==='issue').length,prs:items.filter(x=>x.kind==='pr').length,releases:items.filter(x=>x.kind==='release').length,limitedContexts:items.filter(x=>!x.payload.contextComplete).length}};
   }
-  async getItem(source,item,options){const row={number:item.payload.number,commentCount:0};const page=await this.page(`/${source.target}/${item.kind==='pr'?'pull':'issues'}/${row.number}`,options);return item.kind==='pr'?parsePull(page,source.target,row):parseIssue(page,source.target,row);}
+  async getItem(source,item,options){if(item.kind==='release'){const row={tag:item.payload.tag};return parseRelease(await this.page(`/${source.target}/releases/tag/${encodeURIComponent(row.tag)}`,options,false),source.target,row);}const row={number:item.payload.number,commentCount:0};const page=await this.page(`/${source.target}/${item.kind==='pr'?'pull':'issues'}/${row.number}`,options);return item.kind==='pr'?parsePull(page,source.target,row):parseIssue(page,source.target,row);}
 }

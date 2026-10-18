@@ -63,9 +63,9 @@ Jev fork 0.3.6 的 native 普通模型和 custom 路径均已用合成输入验�
 
 ## 账号与目前限制
 
-- 配置 `cookieFile` 后，两平台均使用导入的Chrome Cookie。GitHub读取网页中的结构化列表、讨论与diff；B站读取视频根评论及逐根分页回复。Cookie连接器只读，`canPublish`始终为false。
+- 配置 `cookieFile` 后，两平台均使用导入的Chrome Cookie。GitHub读取网页中的 Issue、PR、Release 列表及详情，PR 另读取 diff；B站读取视频根评论及逐根分页回复。一个 GitHub 来源可同时选择这三种类型。Cookie连接器只读，`canPublish`始终为false。
 - macOS可显式运行 `node scripts/import-chrome-cookies.mjs .local/credentials/chrome-cookies.json`。默认Chrome的Default profile，可将 `"Profile 1"` 作为第三个参数。仅导入两站必要Cookie，钥匙串密码只留在进程内；文件权限0600。该脚本不会创建PAT/OAuth凭据，不会自动续期；失效后需重新导入。
-- GitHub网页的延迟加载讨论可能不完整，连接器会标注上下文限制并停止该项的自动分析；列表分页未完成则整轮不提交基线。过大的diff同样标注限制。Cookie方式暂不支持Release，未配置Cookie时仍可匿名REST读取公开仓库。
+- GitHub网页的延迟加载讨论可能不完整，连接器会标注上下文限制并停止该项的自动分析；列表分页未完成则整轮不提交基线。过大的diff同样标注限制。Release 读取标题、说明、预发布标志与发布时间，不读取附件内容或关联讨论；网页身份以标签为准，未覆盖私有仓库草稿的真实验收。未配置Cookie时仍可匿名REST读取公开仓库。
 - 公开仓库读取目前按完整快照扫描，较大仓库会产生较多请求；限流后保留已有数据，未完整获取不会推进基线。尚无增量缓存。
 - PR 缺失 patch/代码上下文、issue 缺少复现材料时，只能给出受限分析。尚未接入仓库检索、运行测试或自动修改代码。
 - `unknown` 发布结果需要人工去原平台核实；本版没有自动对账和恢复发送的界面。
