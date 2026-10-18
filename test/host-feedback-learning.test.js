@@ -118,7 +118,7 @@ test('real PTC learning tools preserve proposal receipts and session history wit
       }
     }
     ctx.llm.registerAdapter(['offline-learning'], new Offline());
-    const executor = createDshExecutor(ctx, { createUserMessage: llm.createUserMessage, SessionId: sessions.SessionId, service });
+    const executorOwner = await f.executorOwner(service), { executor } = executorOwner;
     actions.push(`const batch = await tools.dmc_read_learning({section:'batch'}); const cases = await tools.dmc_read_learning({section:'cases',page:1,pageSize:10}); return {batch,cases,hasApply:typeof tools.dmc_apply_learning !== 'undefined',proposal:await tools.dmc_propose_learning(${JSON.stringify(proposal)})};`);
     const receipt = await executor.learn({ batchId: 'batch-a', source: { ...source, workspaceId: registeredWorkspace.id }, settings: { writerProvider: 'offline-learning', writerModel: 'm' }, recordSession: id => { sessionId = id; } });
     assert.equal(receipt.id, 'learning-receipt'); assert.equal(receipt.proposal.status, 'pending'); assert.equal(writes, 1);
@@ -133,6 +133,12 @@ test('real PTC learning tools preserve proposal receipts and session history wit
     assert.equal((await ctx.sessionPersistence.list()).find(row => row.header.id === sessionId).header.agentPreset, 'ptc');
     assert.ok(registeredWorkspace.sessionIds.includes(sessionId));
     const schemasFor = handle => ctx.tools.schemas(handle.agent).map(tool => tool.name);
+    assert.ok(ctx.agents.get(sessions.SessionId(sessionId)), 'completed learning keeps its original Agent available for followup');
+    const querySchema = ctx.tools.schemas(ctx.agents.get(sessions.SessionId(sessionId))).find(tool => tool.name === 'dmc_read_learning');
+    assert.ok(querySchema.parameters.properties.field.enum.includes('learningGuidance'));
+    assert.match(querySchema.parameters.properties.field.description, /target:"global"/);
+    assert.match(querySchema.description, /source 不含 learningGuidance/);
+    await executorOwner.dispose();
     resumed = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-learning', model: 'resume' }, async setup(agentCtx, agent) { await ctx.agentPresets.mount(agentCtx, ctx.sessionProjections.stateOf(agent.session, 'agentPreset')); } });
     assert.ok(schemasFor(resumed).includes('dmc_read_learning')); assert.ok(schemasFor(resumed).includes('dmc_propose_learning'));
     assert.equal(schemasFor(resumed).some(name => /dmc_(apply|submit_result|read_item)/.test(name)), false);

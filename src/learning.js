@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import { validateMaterials, validateStageContexts } from './source-context.js';
 
 export const learningHash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const fields = new Set(['context', 'attentionRules', ...['decision', 'escalation', 'generation', 'supervision'].map(stage => `stageContexts.${stage}.context`)]);
+export const learningConfigurationFields = Object.freeze({
+  source: Object.freeze(['context', 'attentionRules', ...['decision', 'escalation', 'generation', 'supervision'].map(stage => `stageContexts.${stage}.context`), 'textMaterial']),
+  global: Object.freeze(['learningGuidance']),
+});
+const fields = new Set(learningConfigurationFields.source);
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 export function validateFeedback(input) {
   if (!object(input) || typeof input.text !== 'string' || input.text.length > 10000 || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || typeof input.itemVersion !== 'string' || !Number.isSafeInteger(input.analysisRevision) || input.analysisRevision < 0) throw new Error('评价需要正文、评价版本和内容/分析版本，最多10000字');
@@ -13,7 +17,7 @@ export function proposalChanges(submission, batch) {
   const caseIds = new Set(batch.cases.map(entry => entry.id)), seen = new Set();
   const changes = submission.changes.map(change => {
     if (!object(change) || Object.keys(change).some(key => !['target', 'field', 'after', 'caseIds', 'materialName'].includes(key)) || !['source', 'global'].includes(change.target) || typeof change.after !== 'string' || !Array.isArray(change.caseIds) || !change.caseIds.length || change.caseIds.some(id => !caseIds.has(id))) throw new Error('建议修改或对应案例无效');
-    if (change.target === 'global' ? change.field !== 'learningGuidance' : !fields.has(change.field) && change.field !== 'textMaterial') throw new Error('此字段不允许通过学习修改');
+    if (change.target === 'global' ? change.field !== 'learningGuidance' : !fields.has(change.field)) throw new Error('此字段不允许通过学习修改');
     if (change.after.length > (change.field === 'textMaterial' ? 100000 : change.field === 'attentionRules' || change.target === 'global' ? 10000 : 20000)) throw new Error('建议文字过长');
     if (change.field !== 'textMaterial' && change.materialName !== undefined) throw new Error('只有文本知识可以指定资料名称');
     if (change.field === 'textMaterial' && typeof change.materialName === 'string') change = { ...change, materialName: change.materialName.trim() };

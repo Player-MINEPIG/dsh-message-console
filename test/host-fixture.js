@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import assembler from 'dsh-prompt-assembler/plugin';
+import { createDshExecutor } from '../src/dsh.js';
 
 export async function hostFixture(root) {
   const require = createRequire(join(resolve(root), 'package.json'));
@@ -40,6 +41,11 @@ export async function hostFixture(root) {
   await mount('dsh-storage-domain', { backend: 'json' }); await mount('dsh-workspace'); await mount('dsh-session-query');
   const registeredWorkspace = await ctx.workspaceRegistry.create(workspace, 'Offline workspace');
   return { ctx, llm, sessions, directory, workspace, registeredWorkspace, load,
+    async executorOwner(service) {
+      let executor;
+      const owner = await ctx.plugin({ inject: ['workspaceRegistry', 'agents', 'agentPresets', 'permissionPresets', 'sessions', 'dshPromptAssembler', 'llm'], apply(ownerCtx) { executor = createDshExecutor(ownerCtx, { createUserMessage: llm.createUserMessage, SessionId: sessions.SessionId, service }); } });
+      return { executor, dispose: () => owner.dispose() };
+    },
     async close() {
       await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true });
       for (const [index, name] of ['DSH_HOME', 'DSH_AGENTS_HOME'].entries()) if (previousHomes[index] === undefined) delete process.env[name]; else process.env[name] = previousHomes[index];

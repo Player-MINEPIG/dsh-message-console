@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join, resolve } from 'node:path';
 import { readFile, symlink, mkdtemp, rm } from 'node:fs/promises';
-import { createDshExecutor } from '../src/dsh.js';
 import { installAgentTools, assertAgentWritable, assertStorageOutsideWorkspace } from '../src/agent-tools.js';
 import { hostFixture } from './host-fixture.js';
 
@@ -59,7 +58,7 @@ test('stock host scopes actual tools, workspace permissions, AGENTS and durable 
       }
     }
     ctx.llm.registerAdapter(['offline'], new Offline());
-    const executor = createDshExecutor(ctx, { createUserMessage: llm.createUserMessage, SessionId: sessions.SessionId, service });
+    const executorOwner = await f.executorOwner(service), { executor } = executorOwner;
     const request = { runId: 'run-1', workspaceId: registeredWorkspace.id, input: { body: 'UNTRUSTED_SOURCE' }, instructions: 'ROLE_writer。使用保存工具。', provider: 'offline', model: 'writer', role: 'writer', title: 'writer', onSession: id => ids.push(id) };
     const result = await executor.runAgent(request); assert.deepEqual(result.result, analysis); assert.equal(writes.length, 1);
     assert.equal(writes[0].callId, 'call-2:ptc:1');
@@ -82,6 +81,7 @@ test('stock host scopes actual tools, workspace permissions, AGENTS and durable 
 
     const humanId = await executor.conversation({ runId: 'human-run', source: { name: 'source', workspaceId: registeredWorkspace.id }, item: { title: 'Human', body: 'HUMAN_BACKGROUND' }, settings: { writerProvider: 'offline', writerModel: 'human' } });
     assert.equal(counts.get('human'), undefined);
+    await executorOwner.dispose();
     const resumed = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(humanId), agentOptions: { provider: 'offline', model: 'human' }, async setup(agentCtx, agent) { await ctx.agentPresets.mount(agentCtx, ctx.sessionProjections.stateOf(agent.session, 'agentPreset')); } });
     assert.equal(ctx.agentPresets.composedPreset(resumed.agent.ctx), 'ptc');
     assert.ok(ctx.tools.schemas(resumed.agent).some(t => t.name === 'dmc_submit_result'));
@@ -126,7 +126,7 @@ test('PTC host tools read collected comments and commit immutable drafts and ind
   const requests = [], counts = new Map(), commentId = '9223372036854775808', videoDescription = '模型可读视频简介📺';
   try {
     ctx.provide('decisionModels', { async ask() { return { answers: { reply: { probabilities: { ignore: 0, draft: 1, human: 0 } } } }; } });
-    const executor = createDshExecutor(ctx, { createUserMessage: llm.createUserMessage, SessionId: sessions.SessionId, service: () => service });
+    const executorOwner = await f.executorOwner(() => service), { executor } = executorOwner;
     const connector = {
       status: () => ({ ready: true, canPublish: false }),
       async fetch() { return { complete: true, items: [{ remoteId: 'root-comment', kind: 'comment', title: '实际入库原文', body: 'ROOT_ORIGINAL', payload: { video: { title: '测试视频', description: videoDescription }, comments: [{ id: commentId, author: 'fixture', body: 'EXACT_COLLECTED_REPLY_ORIGINAL' }] } }] }; },
@@ -199,6 +199,7 @@ test('PTC host tools read collected comments and commit immutable drafts and ind
     }
     await service.configure({ writerProvider: 'offline-db', writerModel: 'db-human-readonly', supervisorProvider: 'offline-db', supervisorModel: 'db-supervisor' });
     const { sessionId } = await service.openConversation(item.id);
+    await executorOwner.dispose();
     const { setSandboxMode } = await f.load('dsh-sandbox-policy');
     let human = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-db', model: 'db-human-readonly' }, async setup(agentCtx, agent) { await ctx.agentPresets.mount(agentCtx, ctx.sessionProjections.stateOf(agent.session, 'agentPreset')); } });
     const pendingBackground = agent => agent.inbox.nextStep.filter(message => message.source?.purpose === 'human-background');

@@ -55,6 +55,8 @@ test('learning preserves evaluation revisions, saves a pending diff and applies 
   assert.equal(f.service.source(f.source.id).attentionRules, '关注实际经验');
   assert.equal(f.service.feedback(item.id).learned, true);
   assert.deepEqual(await f.service.applyLearning(batch.id, approval(batch)), receipt);
+  assert.throws(() => f.service.proposeLearningFromSession({ sessionId: batch.sessionId, actualCwd: f.workspace }, { operationKey: 'after-apply', summary: '追问不重开已应用批次', changes: [{ target: 'source', field: 'context', after: '不允许的新背景', caseIds: [batch.cases[0].id] }] }), /此批次不能提交学习建议/);
+  assert.equal(f.service.source(f.source.id).context, '原背景');
   await f.store.close(); await f.store.start();
   assert.equal(f.service.learning(batch.id).status, 'applied');
   assert.equal(f.service.feedback(item.id).learned, true);
@@ -110,6 +112,30 @@ test('no suggestions and failed batches retain evaluations while later batches c
   assert.equal(f.service.learningList().unlearnedCount, 51);
   f.service.retryLearning(failed.id);
   assert.equal((await f.settled(failed.id)).status, 'failed');
+});
+
+test('learning configuration discovery identifies exact targets without exposing unrelated settings', async t => {
+  const f = await fixture(t);
+  await f.service.configure({ learningGuidance: '冻结通用指导', writerModel: 'PRIVATE_MODEL_ROUTE' });
+  const batch = await f.start(), actor = { sessionId: batch.sessionId, actualCwd: f.workspace };
+  const read = args => f.service.readLearningFromSession(actor, { section: 'configuration', ...args });
+  const discovery = f.service.readLearningFromSession(actor, { section: 'batch' });
+  assert.deepEqual(discovery.fields.global, ['learningGuidance']);
+  assert.ok(discovery.fields.source.includes('attentionRules'));
+  assert.ok(!discovery.fields.source.includes('learningGuidance'));
+  assert.ok(discovery.examples.some(example => example.target === 'global' && example.field === 'learningGuidance'));
+  for (const target of ['source', 'global']) {
+    const index = read({ target });
+    assert.deepEqual(index.fields, discovery.fields[target]);
+    assert.equal(index.text, undefined);
+    for (const example of index.examples) assert.equal(typeof read(example).text, 'string');
+  }
+  assert.deepEqual(read({}).fields, discovery.fields);
+  assert.doesNotMatch(JSON.stringify(read({})), /PRIVATE_MODEL_ROUTE|冻结通用指导|writerModel/);
+  for (const args of [{ target: 'source', field: 'learningGuidance' }, { target: 'global', field: 'context' }, { field: 'learningGuidance' }, { target: 'global', field: 'writerModel' }]) assert.throws(() => read(args), /global.*learningGuidance/);
+  assert.throws(() => read({ target: 'credentials' }), /source.*global/);
+  await f.service.configure({ learningGuidance: '当前新指导' });
+  assert.equal(read({ target: 'global', field: 'learningGuidance' }).text, '冻结通用指导');
 });
 
 test('bulk read acknowledges attention while preserving analysis and draft history; new analysis or draft reopens attention', async t => {

@@ -33,7 +33,7 @@ function fixture({ noSubmission = false, failFinalFlush = false, unavailable = f
 }
 test('human background is valid durable pending input without waking a model',async()=>{
   const f=fixture(); const id=await f.executor.conversation({item:{title:'Question',body:'original context'},source:{workspaceId:'ws-1',name:'source'},settings:{writerProvider:'p',writerModel:'m'}});
-  assert.equal(f.created[0].sessionId,id);assert.equal(f.created[0].meta.cwd,'/tmp');assert.equal(f.created[0].meta.agentPreset,'ptc');assert.equal(f.inputs.length,0);assert.equal(f.disposed,1);
+  assert.equal(f.created[0].sessionId,id);assert.equal(f.created[0].meta.cwd,'/tmp');assert.equal(f.created[0].meta.agentPreset,'ptc');assert.equal(f.inputs.length,0);assert.equal(f.disposed,0);
   const events=f.snapshots[0].snapshotEvents();assert.equal(events.length,1);assert.equal(events[0].type,'agent/inbox/spliced');
   assert.equal(events[0].data.inserted[0].source.kind,'dsh-message-console');assert.match(events[0].data.inserted[0].content[0].text,/original context/);
   const restored=Session.create(SessionId(id),events);assert.equal(restored.snapshotEvents()[0].data.inserted[0].content[0].text,events[0].data.inserted[0].content[0].text);
@@ -41,17 +41,17 @@ test('human background is valid durable pending input without waking a model',as
 test('agent stages retain separate DSH session links and read durable submissions independently of final text',async()=>{
   const f=fixture(),ids=[];
   for(const role of ['writer','supervisor']){const receipt=await f.executor.runAgent({runId:'run-1',workspaceId:'ws-1',role,input:{text:'source'},instructions:'保存工具结果',provider:'p',model:'m',title:role,onSession:id=>ids.push(id)});assert.deepEqual(receipt.result,{ok:true});}
-  assert.equal(new Set(ids).size,2);assert.equal(f.disposed,2);assert.equal(f.inputs.length,2);
+  assert.equal(new Set(ids).size,2);assert.equal(f.disposed,0);assert.equal(f.inputs.length,2);
 });
 test('missing tool submission fails despite completed assistant text and retains session',async()=>{
   const f=fixture({noSubmission:true}),ids=[];
   await assert.rejects(f.executor.runAgent({workspaceId:'ws-1',role:'writer',input:{},instructions:'JSON',provider:'p',model:'m',title:'writer',onSession:id=>ids.push(id)}),/通过工具保存/);
-  assert.equal(ids.length,1);assert.equal(f.disposed,1);
+  assert.equal(ids.length,1);assert.equal(f.disposed,0);
 });
-test('final persistence failure still disposes the agent',async()=>{
+test('final persistence failure retains the created conversation for diagnosis',async()=>{
   const f=fixture({failFinalFlush:true});
   await assert.rejects(f.executor.runAgent({workspaceId:'ws-1',role:'writer',input:{},instructions:'JSON',provider:'p',model:'m',title:'writer'}),/disk failure/);
-  assert.equal(f.disposed,1);
+  assert.equal(f.disposed,0);
 });
 
 test('missing workspaces and failed attachment stop before a model can run',async()=>{

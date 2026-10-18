@@ -1,4 +1,4 @@
-import { learningHash, validateFeedback, applyLearningChanges } from "./learning.js";
+import { learningHash, validateFeedback, applyLearningChanges, learningConfigurationFields } from "./learning.js";
 import { assembleInput, serializeInput, validateInputStage, previewExtras } from "./input-assembly.js";
 import { prepareSource, postHistoryText } from "./source-context.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -169,16 +169,26 @@ class ConsoleService {
   }
   readLearningFromSession(actor, args = {}) {
     const { batch } = this.#learningBinding(actor), section = args.section ?? "batch";
-    if (section === "batch") return { id: batch.id, sourceId: batch.sourceId, workspaceId: batch.workspaceId, caseCount: batch.caseCount, remainingCount: batch.remainingCount, source: { id: batch.sourceId, name: batch.sourceSnapshot.name, platform: batch.sourceSnapshot.platform, target: batch.sourceSnapshot.target, materials: (batch.sourceSnapshot.materials ?? []).map(({ name, kind }) => ({ name, kind })) }, fields: ["context", "attentionRules", "stageContexts.decision.context", "stageContexts.escalation.context", "stageContexts.generation.context", "stageContexts.supervision.context", "textMaterial", "learningGuidance"], proposal: batch.proposal ? { revision: batch.proposal.revision, hash: batch.proposal.hash, status: batch.proposal.status } : null };
+    const configuration = {
+      fields: learningConfigurationFields,
+      examples: [
+        { section: "configuration", target: "global", field: "learningGuidance" },
+        { section: "configuration", target: "source", field: "attentionRules" },
+        { section: "configuration", target: "source", field: "stageContexts.generation.context" },
+        { section: "configuration", target: "source", field: "textMaterial", materialName: "资料名称" },
+      ],
+    };
+    if (section === "batch") return { id: batch.id, sourceId: batch.sourceId, workspaceId: batch.workspaceId, caseCount: batch.caseCount, remainingCount: batch.remainingCount, source: { id: batch.sourceId, name: batch.sourceSnapshot.name, platform: batch.sourceSnapshot.platform, target: batch.sourceSnapshot.target, materials: (batch.sourceSnapshot.materials ?? []).map(({ name, kind }) => ({ name, kind })) }, ...configuration, proposal: batch.proposal ? { revision: batch.proposal.revision, hash: batch.proposal.hash, status: batch.proposal.status } : null };
     if (["configuration", "context", "materials"].includes(section)) {
       let text;
       if (section === "configuration") {
+        if (args.target !== undefined && !Object.hasOwn(learningConfigurationFields, args.target)) throw new Error("配置查询目标无效；target 仅允许 source 或 global，global 仅允许 field=learningGuidance");
+        if (args.field === undefined) return args.target === undefined ? configuration : { target: args.target, fields: learningConfigurationFields[args.target], examples: configuration.examples.filter(example => example.target === args.target) };
+        if (!learningConfigurationFields[args.target]?.includes(args.field)) throw new Error(`配置查询字段或目标无效；source 允许 ${learningConfigurationFields.source.join(", ")}；global 仅允许 learningGuidance，例如 {section:"configuration",target:"global",field:"learningGuidance"}`);
         if (args.target === "global" && args.field === "learningGuidance") text = batch.settingsSnapshot.learningGuidance ?? "";
-        else if (args.target !== "source") throw new Error("配置查询目标无效");
         else if (["context", "attentionRules"].includes(args.field)) text = batch.sourceSnapshot[args.field] ?? "";
         else if (/^stageContexts\.(decision|escalation|generation|supervision)\.context$/.test(args.field ?? "")) text = batch.sourceSnapshot.stageContexts?.[args.field.split(".")[1]]?.context ?? "";
         else if (args.field === "textMaterial") text = (batch.sourceSnapshot.materials ?? []).find(material => material.kind === "text" && material.name === args.materialName)?.text ?? "";
-        else throw new Error("配置查询字段无效");
       } else {
         if (args.stage !== undefined && !["decision", "escalation", "generation", "supervision"].includes(args.stage)) throw new Error("资料阶段无效");
         const context = args.stage ? batch.preparedSource.resolvedStageContexts?.[args.stage] : { context: batch.preparedSource.context, materials: batch.preparedSource.resolvedMaterials };
