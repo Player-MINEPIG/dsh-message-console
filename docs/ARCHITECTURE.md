@@ -194,7 +194,7 @@ Jev 使用 `decision`，一次低置信升级使用 `escalation`，各内容类�
 
 `src/agent-tools.js` 在真实 Agent 创建或恢复时查询持久绑定，再注册 scoped 工具。绑定先于 `agents.create` 保存，固定 `runId`、来源、内容版本、背景版本、角色、工作区及 canonical `cwd`。监督还固定精确 `draftId` 与正文 hash。工具身份来自实际执行上下文，模型参数不能指定来源、run、角色或会话。
 
-新会话显式解析并挂载宿主已安装的 `standard`，通过会话级权限预设固定 `workspace-write` 和 `ask`，不继承更宽的全局默认值，也不更改全局配置。冷恢复不重设用户后来选择的权限。`dmc_submit_result` 执行前检查实际 sandbox mode 和标准模式的 plan 状态，在提交事务前再次检查；只读、计划中或无法解析权限时拒绝写业务结果。`dmc_read_item` 仍可只读查询。DSH 标准文件权限与发布审核分别执行。
+新会话默认显式解析并挂载宿主已安装的 `ptc`，通过会话级权限预设固定 `workspace-write` 和 `ask`，不继承更宽的全局默认值，也不更改全局配置。冷恢复不重设用户后来选择的模式和权限。`dmc_submit_result` 执行前检查实际 sandbox mode 和当前预设隔离组中的 plan 状态，在提交事务前再次检查；只读、计划中或无法解析权限时拒绝写业务结果。`dmc_read_item` 仍可只读查询。PTC 通过宿主 `run_code` 的 `tools.dmc_*` SDK 进入同一 scoped 工具注册及权限检查，宿主持久记录外层调用与 `tool/ptc-dispatch`；业务保存工具仍可结束自动工作轮。DSH 标准文件权限与发布审核分别执行。
 
 `assertStorageOutsideWorkspace` 在创建会话前和冷恢复工具前，解析存储目录与工作区的 canonical 路径，并与工作区、`/tmp`、`os.tmpdir()` 的写入范围比较。存储目录处于任一可写根内时拒绝启用业务会话，符号链接同样按实际目标比较。数据库继续由领域事务写入，模型不通过文件工具修改数据库。标准 sandbox 的模式只约束文件写入，不构成网络隔离或工作区外读取限制。
 

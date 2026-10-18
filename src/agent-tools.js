@@ -39,7 +39,7 @@ export function assertAgentWritable(ctx, agent) {
   if (mode === 'read-only') throw new Error('当前会话为只读模式，不能保存结果；请通过 DSH 切换权限后重试');
   if (!['workspace-write', 'danger-full-access'].includes(mode)) throw new Error('无法确认会话文件权限，结果未保存');
   const controller = ctx.agentPresets.serviceFor(agent, 'planMode');
-  if (!controller) throw new Error('标准模式计划服务不可用，结果未保存');
+  if (!controller) throw new Error('当前模式计划服务不可用，结果未保存');
   const plan = controller.get(agent);
   if (!plan) throw new Error('无法确认会话计划模式，结果未保存');
   if (plan?.active || plan?.pending === true) throw new Error('当前会话处于计划模式，不能保存结果；请先通过 DSH 退出计划模式');

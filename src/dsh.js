@@ -48,10 +48,10 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
     const workspace = await workspaces.resolve(workspaceId);
     await assertStorageOutsideWorkspace(domain().storageDirectory(), workspace.path);
     const sessionId = SessionId(`dmc-${randomUUID()}`);
-    await ctx.agentPresets.resolve('standard');
+    await ctx.agentPresets.resolve('ptc');
     await domain().bindSession({ sessionId: String(sessionId), runId, role, workspaceId, cwd: workspace.path, ...(draftId ? { draftId } : {}) });
-    const handle = await ctx.agents.create({ sessionId, meta: { cwd: workspace.path, agentPreset: 'standard' }, agentOptions: { provider, model }, async setup(agentCtx, agent) {
-      await ctx.agentPresets.mount(agentCtx, 'standard');
+    const handle = await ctx.agents.create({ sessionId, meta: { cwd: workspace.path, agentPreset: 'ptc' }, agentOptions: { provider, model }, async setup(agentCtx, agent) {
+      await ctx.agentPresets.mount(agentCtx, 'ptc');
       ctx.permissionPresets.set(agent.session, 'workspace-write');
     } });
     try {

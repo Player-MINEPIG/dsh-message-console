@@ -8,6 +8,9 @@ import { hostFixture } from './host-fixture.js';
 
 const root = process.env.DMC_DSH_ROOT;
 const analysis = { summary: '保存的分析', importance: 1, urgent: false, urgencyReason: null, reason: '原文证据', intervention: 'review', evidence: 'confirmed' };
+const wireTool = (request, call) => request.tools.some(tool => tool.name === 'run_code')
+  ? { name: 'run_code', arguments: JSON.stringify({ code: `return await tools.${call.name}(${JSON.stringify(call.arguments)});`, description: '查询或保存本轮结果' }) }
+  : { name: call.name, arguments: JSON.stringify(call.arguments) };
 const submission = { kind: 'analysis', operationKey: 'result', analysis, draftBody: '保存的草稿' };
 
 test('stock host scopes actual tools, workspace permissions, AGENTS and durable result submission across cold resume', { skip: !root, timeout: 30_000 }, async () => {
@@ -39,14 +42,14 @@ test('stock host scopes actual tools, workspace permissions, AGENTS and durable 
         let tool;
         if (request.model === 'writer' && count === 1) tool = { name: 'dmc_read_item', arguments: { section: 'comment', commentId: 'comment-id', version: 'v1' } };
         else if (request.model === 'writer' && count === 2) {
-          assert.match(JSON.stringify(request.messages), /COLLECTED_COMMENT_ORIGINAL/);
+          assert.match(request.messages.findLast(message => message.role === 'tool').content[0].text, /COLLECTED_COMMENT_ORIGINAL/);
           tool = { name: 'dmc_submit_result', arguments: submission };
         } else if (request.model === 'supervisor' && count === 1) tool = { name: 'dmc_submit_result', arguments: { kind: 'supervision', operationKey: 'verdict', approved: false, reason: '缺少依据' } };
         else if (['readonly', 'plan'].includes(request.model) && count === 1) tool = { name: 'dmc_submit_result', arguments: submission };
         else if (request.model === 'human' && count === 1) tool = { name: 'dmc_submit_result', arguments: { kind: 'draft', operationKey: 'human-draft', body: '人工讨论存稿' } };
         if (tool) {
           yield { type: 'block-start', index: 0, blockType: 'tool-call' };
-          yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: `call-${requests.length}`, name: tool.name, arguments: JSON.stringify(tool.arguments) } };
+          yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: `call-${requests.length}`, ...wireTool(request, tool) } };
           yield { type: 'finish', reason: { kind: 'tool-calls' } };
         } else {
           yield { type: 'block-start', index: 0, blockType: 'text' };
@@ -59,13 +62,15 @@ test('stock host scopes actual tools, workspace permissions, AGENTS and durable 
     const executor = createDshExecutor(ctx, { createUserMessage: llm.createUserMessage, SessionId: sessions.SessionId, service });
     const request = { runId: 'run-1', workspaceId: registeredWorkspace.id, input: { body: 'UNTRUSTED_SOURCE' }, instructions: 'ROLE_writer。使用保存工具。', provider: 'offline', model: 'writer', role: 'writer', title: 'writer', onSession: id => ids.push(id) };
     const result = await executor.runAgent(request); assert.deepEqual(result.result, analysis); assert.equal(writes.length, 1);
-    assert.equal(writes[0].callId, 'call-2');
+    assert.equal(writes[0].callId, 'call-2:ptc:1');
     const stored = await ctx.sessionQuery.readSession(ids[0]);
-    assert.equal((await ctx.sessionPersistence.list()).find(row=>row.header.id===ids[0]).header.agentPreset, 'standard');
+    assert.equal((await ctx.sessionPersistence.list()).find(row=>row.header.id===ids[0]).header.agentPreset, 'ptc');
     assert.ok(stored.events.some(e => e.type === 'tool/call')); assert.ok(stored.events.some(e => e.type === 'tool/result'));
     assert.ok(!stored.events.some(e => e.type === 'assistant/message' && e.data.message.content.some(b => b.type === 'text')));
     const first = requests[0];
-    for (const name of ['bash', 'read', 'write', 'edit', 'dmc_read_item', 'dmc_submit_result']) assert.ok(first.tools.some(tool => tool.name === name));
+    assert.deepEqual(first.tools.map(tool => tool.name), ['run_code']);
+    for (const name of ['bash', 'read', 'write', 'edit', 'dmc_read_item', 'dmc_submit_result']) assert.match(JSON.stringify(first.messages), new RegExp(name));
+    for (const name of ['dmc_read_item', 'dmc_submit_result']) assert.ok(stored.events.some(event => event.type === 'tool/ptc-dispatch' && event.data.name === name));
     assert.match(JSON.stringify(first.messages), /HOST_WORKSPACE_POLICY_SENTINEL/);
     assert.match(JSON.stringify(first.messages), /workspace-write/); assert.match(JSON.stringify(first.messages), /Approval policy: ask/);
     const supervisor = await executor.runAgent({ ...request, role: 'supervisor', model: 'supervisor', draftId: 'draft-1', instructions: 'ROLE_supervisor', input: { draft: 'SAVED_DRAFT' } });
@@ -77,11 +82,14 @@ test('stock host scopes actual tools, workspace permissions, AGENTS and durable 
 
     const humanId = await executor.conversation({ runId: 'human-run', source: { name: 'source', workspaceId: registeredWorkspace.id }, item: { title: 'Human', body: 'HUMAN_BACKGROUND' }, settings: { writerProvider: 'offline', writerModel: 'human' } });
     assert.equal(counts.get('human'), undefined);
-    const resumed = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(humanId), agentOptions: { provider: 'offline', model: 'human' }, async setup(agentCtx) { await ctx.agentPresets.mount(agentCtx, 'standard'); } });
+    const resumed = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(humanId), agentOptions: { provider: 'offline', model: 'human' }, async setup(agentCtx, agent) { await ctx.agentPresets.mount(agentCtx, ctx.sessionProjections.stateOf(agent.session, 'agentPreset')); } });
+    assert.equal(ctx.agentPresets.composedPreset(resumed.agent.ctx), 'ptc');
     assert.ok(ctx.tools.schemas(resumed.agent).some(t => t.name === 'dmc_submit_result'));
+    await ctx.agentPresets.select(resumed.agent, 'standard');
     const { setSandboxMode } = await load('dsh-sandbox-policy');
     setSandboxMode(resumed.agent.session, 'read-only'); await ctx.sessions.flush(resumed.agent.session); await resumed.dispose();
-    const cold = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(humanId), agentOptions: { provider: 'offline', model: 'human' }, async setup(agentCtx) { await ctx.agentPresets.mount(agentCtx, 'standard'); } });
+    const cold = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(humanId), agentOptions: { provider: 'offline', model: 'human' }, async setup(agentCtx, agent) { await ctx.agentPresets.mount(agentCtx, ctx.sessionProjections.stateOf(agent.session, 'agentPreset')); } });
+    assert.equal(ctx.agentPresets.composedPreset(cold.agent.ctx), 'standard', 'cold resume respects the user selection over the new-session PTC default');
     assert.equal(ctx.sandboxPolicy.resolve({ session: cold.agent.session }).mode, 'read-only');
     assert.throws(() => assertAgentWritable(ctx, cold.agent), /只读/);
     const inside = await ctx.fs.resolve(join(workspace, 'notes.txt'));
@@ -108,7 +116,7 @@ test('stock host scopes actual tools, workspace permissions, AGENTS and durable 
   } finally { await f.close(); }
 });
 
-test('native host tools read collected comments and commit immutable drafts and independent supervision to SQLite', { skip: !root, timeout: 30_000 }, async () => {
+test('PTC host tools read collected comments and commit immutable drafts and independent supervision to SQLite', { skip: !root, timeout: 30_000 }, async () => {
   const { Store } = await import('../src/store.js'), { ConsoleService } = await import('../src/core.js');
   const f = await hostFixture(root), { ctx, llm, sessions, registeredWorkspace } = f;
   const directory = await mkdtemp(join(resolve('.local'), 'host-sqlite-')), store = await new Store(directory).start();
@@ -152,10 +160,14 @@ test('native host tools read collected comments and commit immutable drafts and 
           const pending = service.draft(service.drafts(service.items(source.id).items[0].id).items[0].id);
           assert.equal(pending.status, 'pending-supervision'); assert.equal(pending.body, '保存的草稿');
           call = { name: 'dmc_submit_result', arguments: { kind: 'supervision', operationKey: 'check', approved: true, reason: '事实充分' } };
-        } else if (request.model.startsWith('db-human') && count === 1) call = { name: 'dmc_submit_result', arguments: { kind: 'draft', operationKey: 'human-save', body: '新人工稿，仍待监督' } };
+        } else if (request.model === 'db-human-readonly' && count === 1) call = { name: 'dmc_read_item', arguments: { section: 'comment', commentId } };
+        else if ((request.model === 'db-human-readonly' && count === 2) || (request.model.startsWith('db-human') && request.model !== 'db-human-readonly' && count === 1)) {
+          if (request.model === 'db-human-readonly') assert.match(request.messages.findLast(message => message.role === 'tool').content[0].text, /EXACT_COLLECTED_REPLY_ORIGINAL/);
+          call = { name: 'dmc_submit_result', arguments: { kind: 'draft', operationKey: 'human-save', body: '新人工稿，仍待监督' } };
+        }
         if (call) {
           yield { type: 'block-start', index: 0, blockType: 'tool-call' };
-          yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: `db-call-${requests.length}`, name: call.name, arguments: JSON.stringify(call.arguments) } };
+          yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: `db-call-${requests.length}`, ...wireTool(request, call) } };
           yield { type: 'finish', reason: { kind: 'tool-calls' } };
         } else {
           yield { type: 'block-start', index: 0, blockType: 'text' };
@@ -180,17 +192,19 @@ test('native host tools read collected comments and commit immutable drafts and 
     for (const link of run.sessions) {
       const log = await ctx.sessionQuery.readSession(link.sessionId);
       assert.ok(log.events.some(e => e.type === 'tool/result'));
+      assert.ok(log.events.some(e => e.type === 'tool/ptc-dispatch' && e.data.name === 'dmc_submit_result'));
+      assert.equal((await ctx.sessionPersistence.list()).find(row => row.header.id === link.sessionId).header.agentPreset, 'ptc');
       assert.ok(!log.events.some(e => e.type === 'assistant/message' && e.data.message.content.some(b => b.type === 'text')));
     }
     await service.configure({ writerProvider: 'offline-db', writerModel: 'db-human-readonly', supervisorProvider: 'offline-db', supervisorModel: 'db-supervisor' });
     const { sessionId } = await service.openConversation(item.id);
     const { setSandboxMode } = await f.load('dsh-sandbox-policy');
-    let human = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-db', model: 'db-human-readonly' }, async setup(agentCtx) { await ctx.agentPresets.mount(agentCtx, 'standard'); } });
+    let human = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-db', model: 'db-human-readonly' }, async setup(agentCtx, agent) { await ctx.agentPresets.mount(agentCtx, ctx.sessionProjections.stateOf(agent.session, 'agentPreset')); } });
     const pendingBackground = agent => agent.inbox.nextStep.filter(message => message.source?.purpose === 'human-background');
     assert.equal(pendingBackground(human.agent).length, 1);
     assert.equal(counts.get('db-human-readonly'), undefined, 'cold attachment does not wake the model');
     await ctx.sessions.flush(human.agent.session); await human.dispose();
-    human = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-db', model: 'db-human-readonly' }, async setup(agentCtx) { await ctx.agentPresets.mount(agentCtx, 'standard'); } });
+    human = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-db', model: 'db-human-readonly' }, async setup(agentCtx, agent) { await ctx.agentPresets.mount(agentCtx, ctx.sessionProjections.stateOf(agent.session, 'agentPreset')); } });
     assert.equal(pendingBackground(human.agent).length, 1, 'repeated cold attachment restores one pending background');
     const send = () => human.agent.followup(llm.createUserMessage({ source: { kind: 'test', form: 'instructions' }, content: [{ type: 'text', text: '保存人工稿' }] }));
     setSandboxMode(human.agent.session, 'read-only'); send(); await human.agent.whenIdle(); await ctx.sessions.flush(human.agent.session);
@@ -200,14 +214,16 @@ test('native host tools read collected comments and commit immutable drafts and 
     assert.equal(firstHumanRequest.messages[0].role, 'system'); assert.ok(backgroundIndex > 0 && userIndex > backgroundIndex,JSON.stringify(firstHumanRequest.messages.map(m=>({role:m.role,source:m.source,text:m.content?.[0]?.text?.slice(0,90)}))));
     assert.equal(firstHumanRequest.messages.filter(message => message.source?.purpose === 'human-background').length, 1);
     assert.equal(service.drafts(item.id).total, 1);
+    assert.equal(ctx.agentPresets.composedPreset(human.agent.ctx), 'ptc');
+    assert.ok(human.agent.session.snapshotEvents().some(e => e.type === 'tool/ptc-dispatch' && e.data.name === 'dmc_read_item'));
     assert.ok(human.agent.session.snapshotEvents().some(e => e.type === 'tool/result' && e.data.message.isError));
     await human.dispose();
-    human = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-db', model: 'db-human-plan' }, async setup(agentCtx) { await ctx.agentPresets.mount(agentCtx, 'standard'); } });
+    human = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-db', model: 'db-human-plan' }, async setup(agentCtx, agent) { await ctx.agentPresets.mount(agentCtx, ctx.sessionProjections.stateOf(agent.session, 'agentPreset')); } });
     assert.equal(pendingBackground(human.agent).length, 0, 'accepted background is not injected again');
     assert.equal(ctx.sandboxPolicy.resolve({ session: human.agent.session }).mode, 'read-only');
     setSandboxMode(human.agent.session, 'workspace-write'); ctx.agentPresets.serviceFor(human.agent, 'planMode').set(human.agent, true);
     send(); await human.agent.whenIdle(); await ctx.sessions.flush(human.agent.session); assert.equal(service.drafts(item.id).total, 1); await human.dispose();
-    human = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-db', model: 'db-human-save' }, async setup(agentCtx) { await ctx.agentPresets.mount(agentCtx, 'standard'); } });
+    human = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-db', model: 'db-human-save' }, async setup(agentCtx, agent) { await ctx.agentPresets.mount(agentCtx, ctx.sessionProjections.stateOf(agent.session, 'agentPreset')); } });
     assert.equal(ctx.agentPresets.serviceFor(human.agent, 'planMode').get(human.agent).active, true);
     ctx.agentPresets.serviceFor(human.agent, 'planMode').set(human.agent, false); send(); await human.agent.whenIdle(); await ctx.sessions.flush(human.agent.session);
     const saved = service.drafts(item.id).items.map(d=>service.draft(d.id)).find(d => d.body === '新人工稿，仍待监督'); assert.equal(saved.status, 'pending-supervision');

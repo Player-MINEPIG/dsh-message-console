@@ -23,7 +23,7 @@ function fixture({ noSubmission = false, failFinalFlush = false, unavailable = f
       snapshots.push(session);
       return { agent, async dispose() { disposed++; } };
     } },
-    agentPresets: { async resolve(id) { return {id}; }, async mount(_ctx,id) { assert.equal(id,'standard'); }, serviceFor() {} },
+    agentPresets: { async resolve(id) { return {id}; }, async mount(_ctx,id) { assert.equal(id,'ptc'); }, serviceFor() {} },
     permissionPresets: { set(_session,id) { assert.equal(id,'workspace-write'); } },
     sessions: { async flush() { if (++flushes >= 4 && failFinalFlush) throw new Error('disk failure'); } },
     dshPromptAssembler: { store: { applySnapshot() {} } },
@@ -33,7 +33,7 @@ function fixture({ noSubmission = false, failFinalFlush = false, unavailable = f
 }
 test('human background is valid durable pending input without waking a model',async()=>{
   const f=fixture(); const id=await f.executor.conversation({item:{title:'Question',body:'original context'},source:{workspaceId:'ws-1',name:'source'},settings:{writerProvider:'p',writerModel:'m'}});
-  assert.equal(f.created[0].sessionId,id);assert.equal(f.created[0].meta.cwd,'/tmp');assert.equal(f.inputs.length,0);assert.equal(f.disposed,1);
+  assert.equal(f.created[0].sessionId,id);assert.equal(f.created[0].meta.cwd,'/tmp');assert.equal(f.created[0].meta.agentPreset,'ptc');assert.equal(f.inputs.length,0);assert.equal(f.disposed,1);
   const events=f.snapshots[0].snapshotEvents();assert.equal(events.length,1);assert.equal(events[0].type,'agent/inbox/spliced');
   assert.equal(events[0].data.inserted[0].source.kind,'dsh-message-console');assert.match(events[0].data.inserted[0].content[0].text,/original context/);
   const restored=Session.create(SessionId(id),events);assert.equal(restored.snapshotEvents()[0].data.inserted[0].content[0].text,events[0].data.inserted[0].content[0].text);

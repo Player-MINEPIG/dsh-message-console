@@ -25,14 +25,16 @@ export async function hostFixture(root) {
   for (const [name, config] of [
     ['sandbox-policy', { mode: 'danger-full-access', workspaceRoot: workspace }], ['fs-sandbox', { cwd: workspace }],
     ['working-directory', {}], ['user-approval', { policy: 'never' }], ['subprocess-local', {}], ['sandbox-local', {}],
-    ['bash-sandbox', {}], ['shell-env', {}], ['permission-presets', {}], ['agent-preset-registry', { default: 'standard' }],
+    ['bash-sandbox', {}], ['ptc-runtime-node', {}], ['shell-env', {}], ['permission-presets', {}], ['agent-preset-registry', { default: 'standard' }],
   ]) await mount(`dsh-${name}`, config);
-  await ctx.agentPresets.register({ id: 'standard', plugins: [
+  const plugins = [
     { id: 'fs', name: '@deepseek-ai/dsh-tool-fs' },
     { id: 'instructions', name: '@deepseek-ai/dsh-agent-instructions', config: { maxBytes: 65536 } },
     { id: 'bash', name: '@deepseek-ai/dsh-tool-bash' },
     { id: 'planning', name: 'cordis:group', group: true, isolate: { planMode: true }, config: [{ id: 'plan', name: '@deepseek-ai/dsh-plan-mode', config: { section: 'Plan mode. Read and discuss without saving changes.' } }] },
-  ] });
+  ];
+  await ctx.agentPresets.register({ id: 'standard', plugins });
+  await ctx.agentPresets.register({ id: 'ptc', plugins: [...plugins, { id: 'presentation', name: '@deepseek-ai/dsh-agent-tool-presentation', config: { mode: 'ptc' } }] });
   await ctx.plugin(assembler, { storageDir: join(directory, 'assembler') });
   await mount('dsh-storage'); await mount('dsh-storage-json', { root: join(directory, 'storage') });
   await mount('dsh-storage-domain', { backend: 'json' }); await mount('dsh-workspace'); await mount('dsh-session-query');
