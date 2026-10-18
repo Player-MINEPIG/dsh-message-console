@@ -1,8 +1,9 @@
 import {load} from 'cheerio';
+import {CookieAuthenticationError} from './cookies.js';
 const contentText=($,node)=>$(node).text().trim();
-export function parsePage(html,{structured=true}={}) {
+export function parsePage(html,{structured=true,authenticated=true}={}) {
   const $=load(html),login=$('meta[name="user-login"]').attr('content');
-  if(!login)throw new Error('GitHub未识别到登录身份，请更新Chrome Cookie');
+  if(authenticated&&!login)throw new CookieAuthenticationError('GitHub未识别到登录身份，请更新Chrome Cookie');
   let payload;
   if(structured)try {payload=JSON.parse($('script[data-target="react-app.embeddedData"]').text()).payload;} catch {throw new Error('GitHub页面结构发生变化，未推进采集基线');}
   return {$,payload,login};
@@ -84,31 +85,45 @@ export function parseRelease(page,repo,row) {
 }
 export class GitHubWebConnector {
   constructor(transport,{maxPages=100}={}){this.transport=transport;this.maxPages=maxPages;}
-  status(){return this.transport.status('github');}
-  async page(path,options,structured=true){
-    const response=await this.transport.get('github',`https://github.com${path}`,{...options,accept:'text/html'});
-    const result=parsePage(await response.text(),{structured});this.transport.identities.github={name:result.login};return result;
+  status(){const status=this.transport.status('github');return this.cookieAuthError?{...status,identity:null,reason:'GitHub Cookie需更新；公开Release可匿名读取'}:status;}
+  async page(path,options,structured=true,anonymous=false){
+    try{
+      const response=await this.transport.get('github',`https://github.com${path}`,{...options,accept:'text/html',anonymous});
+      const result=parsePage(await response.text(),{structured,authenticated:!anonymous});
+      if(!anonymous){this.transport.identities.github={name:result.login};this.cookieAuthError=null;}
+      return result;
+    }catch(error){
+      if(error instanceof CookieAuthenticationError){delete this.transport.identities.github;this.cookieAuthError=error.message;}
+      throw error;
+    }
   }
-  async releases(source,options){
+  async withReleaseAccess(read){
+    try{return {result:await read(false),access:'cookie',fallbackReason:null};}
+    catch(error){
+      if(!(error instanceof CookieAuthenticationError))throw error;
+      return {result:await read(true),access:'public',fallbackReason:error.message};
+    }
+  }
+  async releases(source,options,anonymous=false){
     const rows=new Map();let next=`/${source.target}/releases`,first;
     for(let pageNumber=1;next;pageNumber++){
       if(pageNumber>this.maxPages)throw new Error('GitHub Release列表超过分页上限，未推进采集基线');
-      const parsed=parseReleaseListing(await this.page(next,options,false),source.target,pageNumber);
+      const parsed=parseReleaseListing(await this.page(next,options,false,anonymous),source.target,pageNumber);
       if(pageNumber===1)first=JSON.stringify(parsed);
       const before=rows.size;for(const row of parsed.rows)rows.set(row.tag,row);
       if(parsed.next&&rows.size===before)throw new Error('GitHub Release分页未取得新内容');
       next=parsed.next;
     }
     const items=[];
-    for(const row of rows.values())items.push(parseRelease(await this.page(row.path,options,false),source.target,row));
-    const latest=parseReleaseListing(await this.page(`/${source.target}/releases`,options,false),source.target);
+    for(const row of rows.values())items.push(parseRelease(await this.page(row.path,options,false,anonymous),source.target,row));
+    const latest=parseReleaseListing(await this.page(`/${source.target}/releases`,options,false,anonymous),source.target);
     if(JSON.stringify(latest)!==first)throw new Error('GitHub Release列表在采集期间发生变化，请重新采集');
     return items;
   }
   async fetch(source,options={}){
-    const items=[];
+    const items=[];let releaseMetadata={};
     for(const kind of source.types){
-      if(kind==='release'){items.push(...await this.releases(source,options));continue;}
+      if(kind==='release'){const batch=await this.withReleaseAccess(anonymous=>this.releases(source,options,anonymous));items.push(...batch.result);releaseMetadata={releaseAccess:batch.access,releaseFallbackReason:batch.fallbackReason};continue;}
       const route=kind==='pr'?'pulls':'issues',rows=new Map();let pages=1,total;
       for(let page=1;page<=pages;page++){
         const parsed=parseListing(await this.page(`/${source.target}/${route}?q=is%3A${kind==='pr'?'pr':'issue'}&page=${page}`,options),kind);
@@ -130,7 +145,7 @@ export class GitHubWebConnector {
         items.push(item);
       }
     }
-    return {complete:true,items,metadata:{issues:items.filter(x=>x.kind==='issue').length,prs:items.filter(x=>x.kind==='pr').length,releases:items.filter(x=>x.kind==='release').length,limitedContexts:items.filter(x=>!x.payload.contextComplete).length}};
+    return {complete:true,items,metadata:{issues:items.filter(x=>x.kind==='issue').length,prs:items.filter(x=>x.kind==='pr').length,releases:items.filter(x=>x.kind==='release').length,limitedContexts:items.filter(x=>!x.payload.contextComplete).length,...releaseMetadata}};
   }
-  async getItem(source,item,options){if(item.kind==='release'){const row={tag:item.payload.tag};return parseRelease(await this.page(`/${source.target}/releases/tag/${encodeURIComponent(row.tag)}`,options,false),source.target,row);}const row={number:item.payload.number,commentCount:0};const page=await this.page(`/${source.target}/${item.kind==='pr'?'pull':'issues'}/${row.number}`,options);return item.kind==='pr'?parsePull(page,source.target,row):parseIssue(page,source.target,row);}
+  async getItem(source,item,options){if(item.kind==='release'){const row={tag:item.payload.tag};return(await this.withReleaseAccess(async anonymous=>parseRelease(await this.page(`/${source.target}/releases/tag/${encodeURIComponent(row.tag)}`,options,false,anonymous),source.target,row))).result;}const row={number:item.payload.number,commentCount:0};const page=await this.page(`/${source.target}/${item.kind==='pr'?'pull':'issues'}/${row.number}`,options);return item.kind==='pr'?parsePull(page,source.target,row):parseIssue(page,source.target,row);}
 }

@@ -66,6 +66,8 @@ bridge.publish(source, item, draft, { actionId }) // 发布回执
 
 Release 使用服务端 HTML 列表与详情，不依赖 Issue 或 PR 的 React 数据。列表按页扫描并按标签去重，只接受同仓库的标签与下一页链接；详情验证仓库、标签和发布时间。采集结束重读首页，首页条目或分页发生变化时整轮失败。网页不提供数值 Release ID，因此使用 `release:web-<tag>` 标识；改用 REST 来源时不能据此与数值 ID 自动合并。说明采集不包含附件内容或关联讨论。
 
+Release 仅在 Cookie 缺失或过期、HTTP 401、同源登录跳转或页面缺少登录身份时回退公开网页。回退丢弃本轮已读的 Cookie Release 结果，从第一页匿名重采整批。匿名请求复用串行限速与超时，限于 `github.com` 同仓 Release 路径，不携带凭据、不跟随跳转；分页与详情仍须通过原结构验证。429、其他 HTTP 错误、网络失败与结构异常不会触发回退。`metadata.releaseAccess` 记录 `cookie` 或 `public`，`releaseFallbackReason` 保留登录失效原因；失效时清除旧身份，成功回退不记为抓取失败。Issue 与 PR 不采用匿名回退。
+
 列表完整与上下文完整分别表示：`batch.complete` 验证条目枚举；`payload.contextComplete` 表示该条目的讨论是否完整。GitHub网页尚未遍历全部审查线程，因此PR均标记上下文不完整、仅供查看，不自动审查或拟稿。B站逐页核对计数，根评论与楼中楼总量需与接口声明一致，变化或缺失时不推进基线。
 
 ## 发布状态
