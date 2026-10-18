@@ -2,6 +2,7 @@ import { assembleInput, serializeInput, validateInputStage, previewExtras } from
 import { prepareSource, postHistoryText } from "./source-context.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { realpath } from "node:fs/promises";
 import { validateSource, validateSettings, resolveSettings, valuesOf, PARAMETERS } from "./config.js";
 import { suggestionTarget, metadataSuggestions } from "./source-suggestions.js";
 const fingerprint = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -151,8 +152,8 @@ class ConsoleService {
     if (!["changes", "history"].includes(scope)) throw new Error("整理范围无效");
     return this.#job(`source:${sourceId}`, () => this.#organize(sourceId, { scope }), { busyMessage: "此来源正在刷新或整理，请完成后再试。" });
   }
-  #newRun(source, item, prepared, kind = "automatic") {
-    const run = {
+  #runRecord(source, item, prepared, kind = "automatic") {
+    return {
       id: randomUUID(),
       sourceId: source.id,
       itemId: item.id,
@@ -168,7 +169,9 @@ class ConsoleService {
       startedAt: nowISO(this.clock),
       sourceSnapshot: prepared ?? null
     };
-    return this.store.createRun(run);
+  }
+  #newRun(source, item, prepared, kind = "automatic") {
+    return this.store.createRun(this.#runRecord(source, item, prepared, kind));
   }
   async #organize(sourceId, { scope }) {
     const source = required(this.store.source(sourceId), "来源"), settings = valuesOf(resolveSettings(this.store.settings(), source));
@@ -257,11 +260,12 @@ class ConsoleService {
     if (actualCwd !== void 0 && resolve(actualCwd) !== resolve(binding.cwd)) return null;
     return binding;
   }
-  #binding(sessionId) {
-    return required(this.sessionBinding(sessionId), "受管会话绑定");
+  #binding(sessionId, actualCwd) {
+    return required(this.sessionBinding(sessionId, actualCwd), "受管会话绑定");
   }
-  async readFromSession({ sessionId }, args = {}) {
-    const binding = this.#binding(sessionId), run = required(this.store.run(binding.runId), "运行记录"), itemId = args.itemId ?? run.itemId, section = args.section ?? "item";
+  async readFromSession({ sessionId, actualCwd }, args = {}) {
+    if (!this.store.sessionBinding(String(sessionId))) return this.#readFromWorkspace({ sessionId, actualCwd }, args);
+    const binding = this.#binding(sessionId, actualCwd), run = required(this.store.run(binding.runId), "运行记录"), itemId = args.itemId ?? run.itemId, section = args.section ?? "item";
     if (section === "items") return this.store.items(binding.sourceId, args);
     const item = required(this.store.header(itemId, args.version ?? (itemId === run.itemId ? run.version : void 0)), "内容项");
     if (item.sourceId !== binding.sourceId) throw new Error("只能查询此会话来源的内容");
@@ -278,8 +282,9 @@ class ConsoleService {
     }
     throw new Error("查询区段无效");
   }
-  async submitFromSession({ sessionId, callId, assertWritable }, submission) {
-    const binding = this.#binding(sessionId), run = required(this.store.run(binding.runId), "运行记录");
+  async submitFromSession({ sessionId, callId, actualCwd, assertWritable }, submission) {
+    if (!this.store.sessionBinding(String(sessionId))) return this.#submitFromWorkspace({ sessionId, callId, actualCwd, assertWritable }, submission);
+    const binding = this.#binding(sessionId, actualCwd), run = required(this.store.run(binding.runId), "运行记录");
     if (!submission || typeof submission.operationKey !== "string" || !submission.operationKey.trim() || submission.operationKey.length > 160) throw new Error("提交需要有效操作键");
     const allowed = binding.role === "supervisor" ? "supervision" : binding.role === "decision-escalation" ? "decision" : binding.role === "human" ? "draft" : "analysis";
     if (submission.kind !== allowed) throw new Error("会话角色无权提交此结果");
@@ -301,6 +306,77 @@ class ConsoleService {
     assertWritable?.();
     const receipt = this.store.submit(binding, callId, submission, prepared.contextVersion, nowISO(this.clock));
     return receipt;
+  }
+  async #workspaceScope({ sessionId, actualCwd }) {
+    if (this.store.sessionBinding(String(sessionId))) throw new Error("受管会话必须使用原角色绑定");
+    const cwd = typeof actualCwd === "string" ? await realpath(actualCwd).catch(() => null) : null;
+    if (!cwd) return new Set();
+    const matches = [];
+    for (const candidate of await this.workspaces.list?.() ?? []) {
+      if (candidate.status && candidate.status !== "ok") continue;
+      const path = await realpath(candidate.path).catch(() => null);
+      if (path === cwd) matches.push({ ...candidate, path });
+    }
+    return new Set(matches.map(workspace => workspace.id));
+  }
+  async #workspaceSource(actor, sourceId) {
+    if (typeof sourceId !== "string" || !sourceId) throw new Error("请指定 sourceId，先用 section=sources 查询本工作区来源");
+    const workspaceIds = await this.#workspaceScope(actor);
+    const source = this.store.source(sourceId);
+    if (!source || !workspaceIds.has(source.workspaceId)) throw new Error("只能查询或存稿当前已有工作区绑定来源的内容");
+    const workspace = await this.workspaces.resolve(source.workspaceId);
+    if (await realpath(workspace.path) !== await realpath(actor.actualCwd)) throw new Error("来源工作区已变化");
+    this.#assertWorkspaceSource(source);
+    return { source, workspace };
+  }
+  #assertWorkspaceSource(source) {
+    const current = this.store.source(source.id);
+    if (!current || current.workspaceId !== source.workspaceId || current.revision !== source.revision) throw new Error("来源工作区或资料已变化，请重新查询");
+  }
+  async #readFromWorkspace(actor, args) {
+    const section = args.section ?? "sources";
+    if (section === "sources") {
+      const workspaceIds = await this.#workspaceScope(actor);
+      const sources = this.store.sources().filter(source => workspaceIds.has(source.workspaceId));
+      const page = Number(args.page ?? 1), pageSize = Number(args.pageSize ?? 10);
+      if (!Number.isSafeInteger(page) || page < 1 || ![10, 20, 50].includes(pageSize)) throw new Error("分页参数无效");
+      return { sources: sources.slice((page - 1) * pageSize, page * pageSize).map(({ id, name, platform, target, workspaceId }) => ({ id, name, platform, target, workspaceId })), page, pageSize, total: sources.length, pageCount: Math.max(1, Math.ceil(sources.length / pageSize)) };
+    }
+    const item = args.itemId ? required(this.store.header(args.itemId, args.version), "内容项") : null;
+    const { source, workspace } = await this.#workspaceSource(actor, item?.sourceId ?? args.sourceId);
+    this.#assertWorkspaceSource(source);
+    if (args.sourceId && args.sourceId !== source.id) throw new Error("内容项与来源不匹配");
+    if (section === "items") return this.store.items(source.id, args);
+    if (!item && !["context", "materials"].includes(section)) throw new Error("请指定 itemId，先用 section=items 查询本来源内容 ID");
+    if (section === "item" || ["context", "materials"].includes(section)) {
+      const prepared = await prepareSource(source, workspace);
+      this.#assertWorkspaceSource(source);
+      if (section === "item") return { ...item, contextVersion: prepared.contextVersion };
+      const input = assembleInput(prepared, null, { stage: "generation" });
+      return { version: prepared.contextVersion, contextVersion: prepared.contextVersion, ...input.blocks.find(block => block.key === section) };
+    }
+    if (section === "comments") return this.store.comments(item.id, item.version, args);
+    if (["body", "comment", "diff", "video-description"].includes(section)) return this.store.content(item.id, { ...args, version: item.version });
+    throw new Error("查询区段无效");
+  }
+  async #submitFromWorkspace(actor, submission) {
+    if (submission?.kind !== "draft") throw new Error("普通工作区会话仅可保存草稿");
+    for (const key of ["operationKey", "itemId", "version", "contextVersion", "body"]) if (typeof submission[key] !== "string" || !submission[key].trim()) throw new Error(`存稿需要有效 ${key}`);
+    if (submission.operationKey.length > 160 || JSON.stringify(submission).length > 2e5) throw new Error("提交结果过大或操作键过长");
+    actor.assertWritable?.();
+    const currentItem = required(this.store.header(submission.itemId), "内容项");
+    const { source, workspace } = await this.#workspaceSource(actor, currentItem.sourceId);
+    this.#assertWorkspaceSource(source);
+    const replay = this.store.replaySubmission(String(actor.sessionId), submission);
+    if (replay) return replay;
+    const prepared = await prepareSource(source, workspace);
+    this.#assertWorkspaceSource(source);
+    if (currentItem.version !== submission.version || prepared.contextVersion !== submission.contextVersion) throw new Error("内容或来源资料已变化，请重新读取后存稿");
+    const item = required(this.store.item(currentItem.id), "内容项");
+    if (item.version !== submission.version) throw new Error("内容已变化，请重新读取后存稿");
+    const run = { ...this.#runRecord(source, item, prepared, "human"), originSession: { sessionId: String(actor.sessionId), role: "human", workspaceId: source.workspaceId, at: nowISO(this.clock) } };
+    actor.assertWritable?.();
+    return this.store.submitWorkspaceDraft(run, { sessionId: String(actor.sessionId), workspaceId: source.workspaceId, role: "human", runId: run.id }, actor.callId, submission, prepared.contextVersion, nowISO(this.clock));
   }
   #runItem(run) {
     const item = this.store.item(run.itemId, run.version);

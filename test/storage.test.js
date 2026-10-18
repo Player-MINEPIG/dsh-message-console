@@ -11,7 +11,7 @@ import { prepareSource } from '../src/source-context.js';
 const analysis={summary:'已核对',importance:2,reason:'有问题',urgent:false,urgencyReason:null,intervention:'review',evidence:'confirmed'};
 async function fixture(t){
   const directory=await mkdtemp(join(tmpdir(),'dmc-storage-')),store=await new Store(directory).start();
-  const service=new ConsoleService({store,connectors:{bilibili:{status:()=>({ready:true}),fetch:async()=>({complete:true,items:[]})}},executor:{},workspaces:{resolve:async id=>({id,path:directory}),list:async()=>[]}});
+  const service=new ConsoleService({store,connectors:{bilibili:{status:()=>({ready:true}),fetch:async()=>({complete:true,items:[]})}},executor:{},workspaces:{resolve:async id=>({id,path:directory}),list:async()=>[{id:'ws',path:directory,status:'ok'}]}});
   const source=await service.saveSource({workspaceId:'ws',name:'test',platform:'bilibili',target:'BV1111111111',types:['comment'],context:'shared',stageContexts:{generation:{context:'GEN_SECRET'},supervision:{context:'SUPER_SECRET'}}});
   const item={remoteId:'comment:1',kind:'comment',title:'评论测试',body:'根评论',payload:{comments:[{id:'100000000000000001',author:'测试',body:'完整楼中楼'.repeat(9000)}]}};
   store.applyFetch(source.id,[item],{},new Date().toISOString(),fingerprint);
@@ -164,4 +164,52 @@ test('metadata from the unpublished UTF16 schema upgrades to code point lengths'
   db.prepare("UPDATE item_versions SET metadata=json_set(metadata,'$.diffLength',?,'$.video.descriptionLength',?) WHERE item_id=?").run(diff.length,description.length,f.id);db.exec('PRAGMA user_version=3');db.close();
   await f.store.start();const header=f.service.item(f.id);assert.equal(header.diffLength,Array.from(diff).length);assert.equal(header.payload.video.descriptionLength,Array.from(description).length);
   const chunk=f.service.content(f.id,{section:'video-description',offset:1,length:2});assert.deepEqual({text:chunk.text,total:chunk.total,nextOffset:chunk.nextOffset},{text:'😀b',total:5,nextOffset:3});
+});
+
+
+test('ordinary workspace draft receipts bind explicit item versions and roll back invalid multi-item replacements',async t=>{
+  const f=await fixture(t),actor={sessionId:'ordinary',actualCwd:f.directory,callId:'save'};
+  f.store.applyFetch(f.source.id,[f.item,{...f.item,remoteId:'other'}],{},'2026-01-01',fingerprint);
+  const item=await f.service.readFromSession(actor,{section:'item',itemId:f.id});
+  const input={kind:'draft',operationKey:'first',itemId:f.id,version:item.version,contextVersion:item.contextVersion,body:'ordinary draft'};
+  const saved=await f.service.submitFromSession(actor,input);
+  assert.equal(f.store.sessionBinding('ordinary'),null);
+  const other=`${f.source.id}:other`,before=f.service.runs(other).total;
+  await assert.rejects(f.service.submitFromSession(actor,{...input,itemId:other,operationKey:'replace',replacesDraftId:saved.draftId,bodyHash:saved.draft.bodyHash}),/旧草稿/);
+  assert.equal(f.service.runs(other).total,before);assert.equal(f.store.replaySubmission('ordinary',{...input,operationKey:'replace'}),null);
+  const next={...input,itemId:other,operationKey:'other'};
+  await Promise.all(Array.from({length:8},()=>f.service.submitFromSession(actor,next)));
+  assert.equal(f.service.runs(other).total,1);assert.equal(f.service.drafts(other).total,1);
+  await assert.rejects(f.service.submitFromSession(actor,{...next,operationKey:'first'}),/操作键/);
+  await f.store.close();await f.store.start();
+  assert.equal((await f.service.submitFromSession(actor,input)).id,saved.id);
+  assert.equal(f.service.runs(f.id).items[0].sessions[0].sessionId,'ordinary');
+  await assert.rejects(f.service.submitFromSession(actor,{...input,kind:'supervision'}),/仅可保存草稿/);
+  await assert.rejects(f.service.readFromSession({...actor,actualCwd:'/unregistered'},{section:'body',itemId:f.id}),/当前已有工作区/);
+  await assert.rejects(f.service.submitFromSession({...actor,actualCwd:'/unregistered'},input),/当前已有工作区/);
+});
+
+test('ordinary workspace calls reject source rebinding during scope resolution and old observed versions',async t=>{
+  const f=await fixture(t),actor={sessionId:'ordinary',actualCwd:f.directory,callId:'save'};
+  const observed=await f.service.readFromSession(actor,{section:'item',itemId:f.id});
+  const input={kind:'draft',operationKey:'race',itemId:f.id,version:observed.version,contextVersion:observed.contextVersion,body:'old draft'};
+  const original=f.service.workspaces.resolve;
+  f.service.workspaces.resolve=async id=>{f.store.updateSource(f.source.id,{workspaceId:'moved'});return original(id);};
+  await assert.rejects(f.service.readFromSession(actor,{section:'body',itemId:f.id}),/已变化/);
+  assert.equal(f.service.drafts(f.id).total,0);
+  f.store.updateSource(f.source.id,{workspaceId:'ws'});
+  await assert.rejects(f.service.submitFromSession(actor,input),/已变化/);
+  assert.equal(f.service.runs(f.id).total,0);
+  f.store.updateSource(f.source.id,{workspaceId:'ws'});
+  f.service.workspaces.resolve=async id=>{f.store.applyFetch(f.source.id,[{...f.item,body:'new current body'}],{},'2026-02-01',fingerprint);return original(id);};
+  await assert.rejects(f.service.submitFromSession(actor,input),/已变化/);
+  assert.equal(f.service.runs(f.id).total,0);assert.equal(f.service.drafts(f.id).total,0);assert.equal(f.store.receipt('ordinary'),null);
+});
+
+test('managed sessions never fall back to workspace drafting when actual cwd differs',async t=>{
+  const f=await fixture(t);await f.bind('writer','managed');
+  const actor={sessionId:'managed',actualCwd:'/elsewhere',callId:'save'};
+  await assert.rejects(f.service.readFromSession(actor,{section:'sources'}),/受管会话绑定/);
+  await assert.rejects(f.service.submitFromSession(actor,{kind:'draft',operationKey:'escape',itemId:f.id,body:'no'}),/受管会话绑定/);
+  assert.equal(f.service.drafts(f.id).total,0);
 });

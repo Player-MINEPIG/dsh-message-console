@@ -401,9 +401,12 @@ class Store {
       return run;
     });
   }
+  #runSessions(id, data) {
+    return [...(data.originSession ? [data.originSession] : []), ...this.#all("SELECT data FROM sessions WHERE run_id=? ORDER BY seq", id).map(row => parse(row.data))];
+  }
   run(id) {
     const row = this.#get("SELECT * FROM runs WHERE id=?", id);
-    return row ? { ...parse(row.data), decision: parse(row.decision), sourceSnapshot: parse(row.source_snapshot), sessions: this.#all("SELECT data FROM sessions WHERE run_id=? ORDER BY seq", id).map((r) => parse(r.data)) } : null;
+    return row ? { ...parse(row.data), decision: parse(row.decision), sourceSnapshot: parse(row.source_snapshot), sessions: this.#runSessions(id, parse(row.data)) } : null;
   }
   updateRun(id, change) {
     return this.#transaction(() => {
@@ -415,7 +418,7 @@ class Store {
     required(this.#itemRow(id), "内容项");
     const from = `FROM (SELECT id,json_remove(data,'$.inputSnapshot','$.settingsSnapshot','$.result') data,decision IS NOT NULL hasDecision,started_at,0 legacy FROM runs WHERE item_id=? UNION ALL SELECT session_id id,data,0 hasDecision,coalesce(json_extract(data,'$.at'),'') started_at,1 legacy FROM sessions WHERE item_id=? AND run_id IS NULL)`;
     const page = this.#page(`SELECT count(*) n ${from}`, `SELECT * ${from} ORDER BY started_at DESC,id LIMIT ? OFFSET ?`, [id, id], input);
-    page.items = page.items.map((row) => row.legacy ? { id: `legacy-session:${row.id}`, legacy: true, kind: "legacy-session", status: "historical", startedAt: row.started_at, sessions: [parse(row.data)], hasDecision: false } : { ...parse(row.data), hasDecision: Boolean(row.hasDecision), sessions: this.#all("SELECT data FROM sessions WHERE run_id=? ORDER BY seq", row.id).map((r) => parse(r.data)) });
+    page.items = page.items.map((row) => row.legacy ? { id: `legacy-session:${row.id}`, legacy: true, kind: "legacy-session", status: "historical", startedAt: row.started_at, sessions: [parse(row.data)], hasDecision: false } : { ...parse(row.data), hasDecision: Boolean(row.hasDecision), sessions: this.#runSessions(row.id, parse(row.data)) });
     return page;
   }
   decision(id) {
@@ -514,48 +517,60 @@ class Store {
     }
     return valid;
   }
-  submit(binding, callId, submission, currentContext, at) {
+  submitWorkspaceDraft(run, binding, callId, submission, currentContext, at) {
     return this.#transaction(() => {
-      const hash = requestHash(submission), existing = this.#get("SELECT request_hash,data FROM receipts WHERE session_id=? AND operation_key=?", binding.sessionId, submission.operationKey);
-      if (existing) {
-        if (existing.request_hash !== hash) throw new Error("相同操作键提交了不同内容");
-        return parse(existing.data);
-      }
-      if (binding.role !== "human" && this.receipt(binding.sessionId)) throw new Error("此阶段已有持久结果");
-      const run = required(this.run(binding.runId), "运行记录"), item = required(this.#itemRow(run.itemId), "内容项"), source = required(this.source(run.sourceId), "来源");
-      const fresh = item.version === run.version && currentContext === run.contextVersion && source.contextVersion === run.sourceContextVersion && source.workspaceId === binding.workspaceId;
-      const receipt = { id: randomUUID(), sessionId: binding.sessionId, runId: run.id, kind: submission.kind, result: null };
-      if (submission.kind === "analysis") {
-        receipt.result = { ...submission.analysis, processing: "analysis" };
-        receipt.adopted = fresh && this.#adopt(run, receipt.result);
-        receipt.analysisId = receipt.id;
-        this.#writeRun({ ...run, resultAdopted: receipt.adopted, result: receipt.result });
-        if (item.kind !== "release" && submission.analysis.intervention !== "human" && submission.draftBody?.trim()) receipt.draft = this.#newDraft(run, submission.draftBody, receipt.adopted ? "pending-supervision" : "stale", at);
-      } else if (submission.kind === "draft") {
-        if (submission.replacesDraftId) {
-          const old = required(this.draft(submission.replacesDraftId), "旧草稿");
-          if (old.itemId !== run.itemId || old.bodyHash !== submission.bodyHash || !["pending-supervision", "ready", "blocked", "stale"].includes(old.status)) throw new Error("旧草稿已变化或不能改稿");
-          this.#updateDraft(old.id, { status: "superseded" });
-        }
-        receipt.draft = this.#newDraft(run, submission.body, fresh ? "pending-supervision" : "stale", at);
-        receipt.result = receipt.draft;
-      } else if (submission.kind === "decision") {
-        receipt.result = { choice: submission.choice, certain: submission.certain, reason: submission.reason };
-      } else if (submission.kind === "supervision") {
-        const draft = required(this.draft(binding.draftId), "草稿");
-        if (draft.runId !== run.id || draft.bodyHash !== binding.bodyHash || !["pending-supervision", "ready", "blocked"].includes(draft.status)) throw new Error("监督目标草稿已变化");
-        receipt.result = { approved: submission.approved, reason: submission.reason };
-        this.#updateDraft(draft.id, { supervision: { ...receipt.result, sessionId: binding.sessionId, at }, status: fresh && draft.contextVersion === currentContext ? submission.approved ? "ready" : "blocked" : "stale" });
-        receipt.draft = this.draft(draft.id);
-      } else throw new Error("提交类型无效");
-      if (receipt.draft) {
-        receipt.draftId = receipt.draft.id;
-        receipt.draft = { id: receipt.draft.id, body: receipt.draft.body, bodyHash: receipt.draft.bodyHash, status: receipt.draft.status };
-      }
-      this.#run("INSERT INTO receipts VALUES(?,?,?,?,?)", receipt.id, binding.sessionId, submission.operationKey, hash, json(receipt));
-      this.#audit("tool.result.saved", { sessionId: binding.sessionId, callId, runId: run.id, receiptId: receipt.id, kind: submission.kind }, at);
-      return receipt;
+      const replay = this.replaySubmission(binding.sessionId, submission);
+      if (replay) return replay;
+      if (this.sessionBinding(binding.sessionId)) throw new Error("受管会话必须使用原角色绑定");
+      const item = required(this.#itemRow(run.itemId), "内容项"), source = required(this.source(run.sourceId), "来源");
+      if (item.version !== submission.version || run.contextVersion !== submission.contextVersion || source.contextVersion !== run.sourceContextVersion || source.workspaceId !== binding.workspaceId) throw new Error("内容或来源资料已变化，请重新读取后存稿");
+      this.#writeRun(run);
+      return this.#submit(binding, callId, submission, currentContext, at);
     });
+  }
+  submit(binding, callId, submission, currentContext, at) {
+    return this.#transaction(() => this.#submit(binding, callId, submission, currentContext, at));
+  }
+  #submit(binding, callId, submission, currentContext, at) {
+    const hash = requestHash(submission), existing = this.#get("SELECT request_hash,data FROM receipts WHERE session_id=? AND operation_key=?", binding.sessionId, submission.operationKey);
+    if (existing) {
+      if (existing.request_hash !== hash) throw new Error("相同操作键提交了不同内容");
+      return parse(existing.data);
+    }
+    if (binding.role !== "human" && this.receipt(binding.sessionId)) throw new Error("此阶段已有持久结果");
+    const run = required(this.run(binding.runId), "运行记录"), item = required(this.#itemRow(run.itemId), "内容项"), source = required(this.source(run.sourceId), "来源");
+    const fresh = item.version === run.version && currentContext === run.contextVersion && source.contextVersion === run.sourceContextVersion && source.workspaceId === binding.workspaceId;
+    const receipt = { id: randomUUID(), sessionId: binding.sessionId, runId: run.id, kind: submission.kind, result: null };
+    if (submission.kind === "analysis") {
+      receipt.result = { ...submission.analysis, processing: "analysis" };
+      receipt.adopted = fresh && this.#adopt(run, receipt.result);
+      receipt.analysisId = receipt.id;
+      this.#writeRun({ ...run, resultAdopted: receipt.adopted, result: receipt.result });
+      if (item.kind !== "release" && submission.analysis.intervention !== "human" && submission.draftBody?.trim()) receipt.draft = this.#newDraft(run, submission.draftBody, receipt.adopted ? "pending-supervision" : "stale", at);
+    } else if (submission.kind === "draft") {
+      if (submission.replacesDraftId) {
+        const old = required(this.draft(submission.replacesDraftId), "旧草稿");
+        if (old.itemId !== run.itemId || old.bodyHash !== submission.bodyHash || !["pending-supervision", "ready", "blocked", "stale"].includes(old.status)) throw new Error("旧草稿已变化或不能改稿");
+        this.#updateDraft(old.id, { status: "superseded" });
+      }
+      receipt.draft = this.#newDraft(run, submission.body, fresh ? "pending-supervision" : "stale", at);
+      receipt.result = receipt.draft;
+    } else if (submission.kind === "decision") {
+      receipt.result = { choice: submission.choice, certain: submission.certain, reason: submission.reason };
+    } else if (submission.kind === "supervision") {
+      const draft = required(this.draft(binding.draftId), "草稿");
+      if (draft.runId !== run.id || draft.bodyHash !== binding.bodyHash || !["pending-supervision", "ready", "blocked"].includes(draft.status)) throw new Error("监督目标草稿已变化");
+      receipt.result = { approved: submission.approved, reason: submission.reason };
+      this.#updateDraft(draft.id, { supervision: { ...receipt.result, sessionId: binding.sessionId, at }, status: fresh && draft.contextVersion === currentContext ? submission.approved ? "ready" : "blocked" : "stale" });
+      receipt.draft = this.draft(draft.id);
+    } else throw new Error("提交类型无效");
+    if (receipt.draft) {
+      receipt.draftId = receipt.draft.id;
+      receipt.draft = { id: receipt.draft.id, body: receipt.draft.body, bodyHash: receipt.draft.bodyHash, status: receipt.draft.status };
+    }
+    this.#run("INSERT INTO receipts VALUES(?,?,?,?,?)", receipt.id, binding.sessionId, submission.operationKey, hash, json(receipt));
+    this.#audit("tool.result.saved", { sessionId: binding.sessionId, callId, runId: run.id, receiptId: receipt.id, kind: submission.kind }, at);
+    return receipt;
   }
   #newDraft(run, body, status, at) {
     const draft = { id: randomUUID(), itemId: run.itemId, sourceId: run.sourceId, runId: run.id, version: run.version, contextVersion: run.contextVersion, body, kind: this.#itemRow(run.itemId).kind === "pr" ? "review" : "reply", status, createdAt: at, supervision: null };

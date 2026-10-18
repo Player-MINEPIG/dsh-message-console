@@ -104,7 +104,8 @@ test('stock host scopes actual tools, workspace permissions, AGENTS and durable 
     const blockedTool = ctx.tools.get('dmc_submit_result', cold.agent), before = writes.length;
     await assert.rejects(blockedTool.execute({ kind: 'draft', operationKey: 'forbidden-plan', body: 'no' }, { agent: cold.agent, callId: 'plan-denial' }), /计划模式/);
     const alien = await ctx.agents.create({ sessionId: sessions.SessionId('ordinary-session'), meta: { cwd: workspace }, agentOptions: { provider: 'offline', model: 'human' } });
-    assert.ok(!ctx.tools.schemas(alien.agent).some(t => t.name.startsWith('dmc_')));
+    assert.ok(ctx.tools.schemas(alien.agent).some(t => t.name === 'dmc_read_item'));
+    assert.deepEqual(ctx.tools.schemas(alien.agent).find(t => t.name === 'dmc_submit_result').parameters.properties.kind.enum, ['draft']);
     await assert.rejects(blockedTool.execute({ kind: 'draft', operationKey: 'foreign', body: 'no' }, { agent: alien.agent, callId: 'foreign' }), /不匹配/);
     assert.throws(() => ctx.tools.get('dmc_read_item', cold.agent).execute({}, { agent: alien.agent }), /不匹配/);
     assert.equal(writes.length, before); await alien.dispose();

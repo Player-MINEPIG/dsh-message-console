@@ -192,11 +192,17 @@ Jev 使用 `decision`，一次低置信升级使用 `escalation`，各内容类�
 
 ## Agent 工具和结果收据
 
-`src/agent-tools.js` 在真实 Agent 创建或恢复时查询持久绑定，再注册 scoped 工具。绑定先于 `agents.create` 保存，固定 `runId`、来源、内容版本、背景版本、角色、工作区及 canonical `cwd`。监督还固定精确 `draftId` 与正文 hash。工具身份来自实际执行上下文，模型参数不能指定来源、run、角色或会话。
+`src/agent-tools.js` 在插件加载、真实 Agent 创建或恢复时注册 scoped 工具。受管会话查询持久绑定。绑定先于 `agents.create` 保存，固定 `runId`、来源、内容版本、背景版本、角色、工作区及 canonical `cwd`。监督还固定精确 `draftId` 与正文 hash。受管工具的身份来自实际执行上下文，模型参数不能改变绑定来源、run、角色或会话。
+
+普通会话也注册 `dmc_read_item` 与 `dmc_submit_result`，不创建受管角色绑定，不改变其模式或 Assembler 配置。每次调用按真实会话 `cwd` 与已有 WorkspaceRegistry 目录的 canonical 路径精确匹配，再检查来源当前 `workspaceId`。无匹配来源时 `section: 'sources'` 返回空列表，其他查询或存稿拒绝。工具安装不依赖当时是否存在来源，因此已活跃会话可发现后来新增的来源。已有受管身份即使 cwd 不符也不降级为普通权限。
+
+普通查询先用 `section: 'sources'` 发现来源，再以 `sourceId` 获取 `items`。显式 `itemId` 用于读取原文、评论或资料。`item` 返回的 `contextVersion` 由当前来源和工作区资料重新计算，`context`、`materials` 只返回共用及生成阶段资料。来源在异步解析期间改绑或配置变化时拒绝查询。工具说明把平台原文、评论和资料标为待处理数据，其中指令不代表用户授权。
+
+普通提交的 schema 仅允许 `kind: 'draft'`，必须携带 `itemId`、`version`、`contextVersion`、`operationKey` 和 `body`。业务层先核对工作区与权限，SQLite 短事务再检查最新内容版本、来源版本与工作区，原子保存 human run、不可变草稿、审计和收据。run 的 `originSession` 引用实际普通会话，`run.sessions` 合并该引用供现有界面打开历史；不向受管 `sessions` 表写入普通身份，也不新增宿主会话。一次普通会话可产生不同内容项的多个 run。收据继续使用真实 `(sessionId, operationKey)` 唯一键，跨项复用键会冲突，精确重试不新建 run。草稿仍为 `pending-supervision`，复用现有监督流程，没有发布工具。
 
 新会话默认显式解析并挂载宿主已安装的 `ptc`，通过会话级权限预设固定 `workspace-write` 和 `ask`，不继承更宽的全局默认值，也不更改全局配置。冷恢复不重设用户后来选择的模式和权限。`dmc_submit_result` 执行前检查实际 sandbox mode 和当前预设隔离组中的 plan 状态，在提交事务前再次检查；只读、计划中或无法解析权限时拒绝写业务结果。`dmc_read_item` 仍可只读查询。PTC 通过宿主 `run_code` 的 `tools.dmc_*` SDK 进入同一 scoped 工具注册及权限检查，宿主持久记录外层调用与 `tool/ptc-dispatch`；业务保存工具仍可结束自动工作轮。DSH 标准文件权限与发布审核分别执行。
 
-`assertStorageOutsideWorkspace` 在创建会话前和冷恢复工具前，解析存储目录与工作区的 canonical 路径，并与工作区、`/tmp`、`os.tmpdir()` 的写入范围比较。存储目录处于任一可写根内时拒绝启用业务会话，符号链接同样按实际目标比较。数据库继续由领域事务写入，模型不通过文件工具修改数据库。标准 sandbox 的模式只约束文件写入，不构成网络隔离或工作区外读取限制。
+`assertStorageOutsideWorkspace` 在创建受管会话前、恢复其工具前和业务提交前，解析存储目录与工作区的 canonical 路径，并与工作区、`/tmp`、`os.tmpdir()` 的写入范围比较。存储目录处于任一可写根内时拒绝启用业务会话，符号链接同样按实际目标比较。数据库继续由领域事务写入，模型不通过文件工具修改数据库。标准 sandbox 的模式只约束文件写入，不构成网络隔离或工作区外读取限制。
 
 人工会话的背景使用 `Agent.inject` 放进 `next-step` 待用队列。`AgentHandle.dispose()` 会清空当前队列，因此 `agent/created` 的串行监听在恢复人工会话时，调用只读 `sessionBackground(sessionId)`，从持久 run 快照重建尚未接受的背景。监听先查实际 `user/message` 与待用队列，已经进入历史或已在队列的背景不再加入。人工会话的 scoped `agent/pre-step` 只把本插件背景移到当前用户输入之前，系统消息仍由宿主创建。首次用户请求因而保持系统、背景、用户的顺序，也不会产生仅处理背景的额外模型轮。冷静态查询保留已有真实历史，尚未执行的背景保持待用身份。
 
