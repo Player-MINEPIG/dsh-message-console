@@ -9,6 +9,8 @@ const parse = (value) => value ? JSON.parse(value) : null;
 const canonical = (value) => JSON.stringify(value, (_, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 const requestHash = (value) => createHash("sha256").update(canonical(value)).digest("hex");
 const active = ["pending-supervision", "ready", "blocked", "stale", "sending", "unknown"];
+const updatedTimeSQL = "coalesce(strftime('%Y-%m-%dT%H:%M:%fZ',json_extract(i.data,'$.updatedAt')),strftime('%Y-%m-%dT%H:%M:%fZ',json_extract(v.payload,'$.updatedAt')),strftime('%Y-%m-%dT%H:%M:%fZ',json_extract(v.payload,'$.publishedAt')),strftime('%Y-%m-%dT%H:%M:%fZ',i.changed_at),i.changed_at)";
+const remoteTime = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
 const required = (value, label) => {
   if (!value) throw new Error(`${label}不存在`);
   return value;
@@ -159,6 +161,15 @@ class Store {
         });
       }
       this.#transaction(() => {
+        let restored = 0;
+        for (const row of this.#all('SELECT id,version,analysis FROM items WHERE analyzed_version IS NULL AND analysis IS NOT NULL')) {
+          const evidence = this.#all("SELECT json_extract(data,'$.result') result FROM runs WHERE item_id=? AND json_extract(data,'$.resultAdopted')=1 AND json_extract(data,'$.version')=? ORDER BY started_at DESC,id", row.id, row.version).some(run => canonical(parse(run.result)) === canonical(parse(row.analysis)));
+          if (!evidence) continue;
+          this.#run('UPDATE items SET analyzed_version=version WHERE id=?', row.id);
+          this.#project(row.id);
+          restored++;
+        }
+        if (restored) this.#audit('analysis.restored', { count: restored });
         for (const row of this.#all("SELECT id,data FROM learning_batches WHERE status IN ('queued','running')")) this.#writeLearning({ ...parse(row.data), status: "interrupted", error: "进程中断，可重试本批评价整理。" });
         for (const row of this.#all("SELECT id FROM drafts WHERE status='sending'")) this.#updateDraft(row.id, { status: "unknown", error: "上次发送被中断，需核实远端结果。" });
         for (const row of this.#all("SELECT id FROM runs WHERE status='running'")) {
@@ -263,10 +274,6 @@ class Store {
   }
   #invalidateSource(id) {
     for (const row of this.#all("SELECT id FROM drafts WHERE source_id=? AND status IN ('pending-supervision','ready','blocked')", id)) this.#updateDraft(row.id, { status: "stale" });
-    for (const row of this.#all("SELECT id FROM items WHERE source_id=? AND analysis IS NOT NULL", id)) {
-      this.#run("UPDATE items SET analyzed_version=NULL WHERE id=?", row.id);
-      this.#project(row.id);
-    }
   }
   updateSource(id, change) {
     return this.#transaction(() => {
@@ -330,8 +337,12 @@ class Store {
         }
         old ??= legacyRemoteId ? this.#itemRow(`${sourceId}:${legacyRemoteId}`) : null;
         const id = old?.id ?? `${sourceId}:${entry.remoteId}`, version = fingerprint({ title: entry.title, body: entry.body, payload: entry.payload });
-        if (old?.version === version) continue;
-        const item = { ...old ? this.#itemState(old) : {}, ...entry, remoteId: old?.remote_id ?? entry.remoteId, id, sourceId, version, previous: old ? { version: old.version } : null, readVersion: old?.read_version ?? (!source.initialized ? version : null), analyzedVersion: old?.analyzed_version ?? (!source.initialized ? version : null), handling: old?.handling ?? "none", changedAt: at };
+        const updatedAt = remoteTime(entry.updatedAt) ?? remoteTime(entry.payload?.updatedAt) ?? remoteTime(entry.payload?.publishedAt);
+        if (old?.version === version) {
+          if (updatedAt && parse(old.data).updatedAt !== updatedAt) this.#run("UPDATE items SET data=? WHERE id=?", json({ ...parse(old.data), updatedAt }), id);
+          continue;
+        }
+        const item = { ...old ? this.#itemState(old) : {}, ...entry, updatedAt, remoteId: old?.remote_id ?? entry.remoteId, id, sourceId, version, previous: old ? { version: old.version } : null, readVersion: old?.read_version ?? (!source.initialized ? version : null), analyzedVersion: old?.analyzed_version ?? (!source.initialized ? version : null), handling: old?.handling ?? "none", changedAt: at };
         this.#writeItem(item);
         if (old) this.#advanceAttention(id);
         this.#version(item, true);
@@ -375,11 +386,14 @@ class Store {
   }
   #card(row) {
     const item = this.#itemState(row), payload = { ...parse(row.payload), ...row.remote_state ? { state: row.remote_state } : {}, ...row.remote_merged !== void 0 && row.remote_merged !== null ? { merged: Boolean(row.remote_merged) } : {} };
-    return { ...item, title: row.title, url: row.url, analysis: currentAnalysis(item), priority: row.priority, needsHandling: Boolean(row.needs_handling), status: row.needs_handling ? "handling" : row.unread ? "unread" : "read", excerpt: row.excerpt, payload: { ...payload?.state ? { state: payload.state } : {}, ...payload?.merged !== void 0 ? { merged: payload.merged } : {}, ...payload?.contextComplete !== void 0 ? { contextComplete: payload.contextComplete } : {}, ...payload?.contextLimit ? { contextLimit: payload.contextLimit } : {}, ...payload?.video ? { video: payload.video } : {} } };
+    return { ...item, updatedAt: row.updated_at ?? remoteTime(item.updatedAt) ?? item.changedAt, title: row.title, url: row.url, analysis: currentAnalysis(item), priority: row.priority, needsHandling: Boolean(row.needs_handling), status: row.needs_handling ? "handling" : row.unread ? "unread" : "read", excerpt: row.excerpt, payload: { ...payload?.state ? { state: payload.state } : {}, ...payload?.merged !== void 0 ? { merged: payload.merged } : {}, ...payload?.contextComplete !== void 0 ? { contextComplete: payload.contextComplete } : {}, ...payload?.contextLimit ? { contextLimit: payload.contextLimit } : {}, ...payload?.video ? { video: payload.video } : {} } };
   }
   items(sourceId, input = {}) {
-    required(this.source(sourceId), "来源");
+    const source = required(this.source(sourceId), "来源");
     const q = pageQuery(input), args = [sourceId], where = ["i.source_id=?"];
+    const order = input.order ?? 'updated-desc', showClosed = input.showClosed ?? true;
+    if (!['updated-desc', 'updated-asc'].includes(order) || ![true, false, 'true', 'false'].includes(showClosed)) throw new Error('列表显示参数无效');
+    if (source.platform === 'github' && showClosed !== true && showClosed !== 'true') where.push("(i.kind NOT IN ('issue','pr') OR (lower(coalesce(json_extract(v.metadata,'$.state'),json_extract(v.payload,'$.state'),'')) NOT IN ('closed','merged') AND coalesce(json_extract(v.metadata,'$.merged'),json_extract(v.payload,'$.merged'),0)<>1))");
     if (q.filter === "unread") where.push("i.unread=1");
     if (q.filter === "handling") where.push("i.needs_handling=1");
     if (q.query) {
@@ -387,7 +401,7 @@ class Store {
       args.push(q.query);
     }
     const from = `FROM items i JOIN item_versions v ON v.item_id=i.id AND v.version=i.version WHERE ${where.join(" AND ")}`;
-    const page = this.#page(`SELECT count(*) n ${from}`, `SELECT i.*,v.title,v.url,substr(v.body,1,600) excerpt,v.metadata payload,coalesce(json_extract(v.metadata,'$.state'),json_extract(v.payload,'$.state')) remote_state,coalesce(json_extract(v.metadata,'$.merged'),json_extract(v.payload,'$.merged')) remote_merged ${from} ORDER BY i.priority DESC,i.changed_at DESC,i.id LIMIT ? OFFSET ?`, args, q);
+    const page = this.#page(`SELECT count(*) n ${from}`, `SELECT i.*,${updatedTimeSQL} updated_at,v.title,v.url,substr(v.body,1,600) excerpt,v.metadata payload,coalesce(json_extract(v.metadata,'$.state'),json_extract(v.payload,'$.state')) remote_state,coalesce(json_extract(v.metadata,'$.merged'),json_extract(v.payload,'$.merged')) remote_merged ${from} ORDER BY i.needs_handling DESC,i.priority DESC,updated_at ${order === 'updated-asc' ? 'ASC' : 'DESC'},i.id LIMIT ? OFFSET ?`, args, q);
     page.items = page.items.map((row) => this.#card(row));
     return page;
   }
@@ -436,9 +450,9 @@ class Store {
       return { ...s, total: row.total, unread: row.unread, handling: row.handling, analyzed: row.analyzed, unreadUnorganized: row.unorganized, importance: Math.floor((top?.priority ?? 0) / 10), urgent: Boolean(this.#get("SELECT 1 FROM items WHERE source_id=? AND priority%10>0 LIMIT 1", row.id)), priority: top?.priority ?? 0, changedAt: changed ?? "", summaries };
     });
   }
-  candidates(sourceId, scope, contextVersion, { includeClosed = true } = {}) {
+  candidates(sourceId, scope, { includeClosed = true } = {}) {
     const total = this.#get("SELECT count(*) n FROM items WHERE source_id=?", sourceId).n;
-    const rows = this.#all(`SELECT i.id,i.version${includeClosed ? '' : ",i.kind,json_extract(v.payload,'$.state') state,json_extract(v.payload,'$.merged') merged"} FROM items i ${includeClosed ? '' : 'JOIN item_versions v ON v.item_id=i.id AND v.version=i.version'} WHERE source_id=? AND (analyzed_version IS NOT i.version OR (analysis IS NOT NULL AND context_version IS NOT ?) ${scope === "history" ? "OR analysis IS NULL" : ""}) ORDER BY i.id`, sourceId, contextVersion ?? null);
+    const rows = this.#all(`SELECT i.id,i.version${includeClosed ? '' : ",i.kind,json_extract(v.payload,'$.state') state,json_extract(v.payload,'$.merged') merged"} FROM items i ${includeClosed ? '' : 'JOIN item_versions v ON v.item_id=i.id AND v.version=i.version'} WHERE source_id=? AND (analyzed_version IS NOT i.version ${scope === "history" ? "OR analysis IS NULL" : ""}) ORDER BY i.id`, sourceId);
     const refs = rows.filter(row => includeClosed || !(['issue','pr'].includes(row.kind) && (['closed','merged'].includes(String(row.state).toLowerCase()) || row.merged === 1))).map(({id,version}) => ({id,version}));
     return { total, refs, excludedClosed: rows.length - refs.length, unanalysed: this.#get("SELECT count(*) n FROM items WHERE source_id=? AND analysis IS NULL", sourceId).n };
   }

@@ -156,8 +156,13 @@ test('bulk read acknowledges attention while preserving analysis and draft histo
   assert.equal(f.items()[0].attentionAcknowledged, false); assert.equal(f.items()[0].status, 'handling');
 });
 
-test('global learning guidance applies only through review and invalidates affected old results; user-edited source operational state survives apply', async t => {
+test('global learning guidance applies only through review and preserves operational state; user-edited source operational state survives apply', async t => {
   const f = await fixture(t);
+  const item = f.items()[0], source = f.service.source(f.source.id);
+  f.store.createRun({ id: 'learning-preserved-analysis', sourceId: source.id, itemId: item.id, version: item.version, contextVersion: source.contextVersion, sourceContextVersion: source.contextVersion, workspaceId: 'ws', baseAnalysisRevision: item.analysisRevision, status: 'completed' });
+  assert.equal(f.store.adoptResult('learning-preserved-analysis', analysis), true);
+  f.service.saveFeedback(item.id, { text: '已处理的评价', expectedRevision: 1, itemVersion: item.version, analysisRevision: f.store.item(item.id).analysisRevision });
+  const before = f.store.item(item.id);
   f.service.executor.learn = async ({ batchId }) => {
     const sessionId = `global-${batchId}`;
     await f.service.bindLearningSession({ batchId, sessionId, workspaceId: 'ws', cwd: f.workspace });
@@ -173,6 +178,10 @@ test('global learning guidance applies only through review and invalidates affec
   assert.equal(f.service.source(f.source.id).context, '本源新增知识');
   const preview = await f.service.previewInput({ sourceId: f.source.id, source: f.service.source(f.source.id), stage: 'generation' });
   assert.match(preview.serialized, /先核对用户实际场景/);
+  const after = f.store.item(item.id);
+  for (const key of ['analysis', 'analysisRevision', 'analyzedVersion', 'analyzedContextVersion', 'readVersion', 'handling', 'attentionVersion', 'acknowledgedAttentionVersion']) assert.deepEqual(after[key], before[key]);
+  assert.equal(f.items()[0].analysis.summary, analysis.summary);
+  for (const scope of ['changes', 'history']) assert.equal((await f.service.organize(source.id, { scope })).candidates, 0);
 });
 
 test('schema four upgrade adds learning tables and attention columns without rewriting existing table rows', async t => {

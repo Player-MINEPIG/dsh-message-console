@@ -57,7 +57,8 @@ export class BilibiliConnector {
         if(replies.size!==expected)throw new Error('B站评论数量在采集期间发生变化或存在不可见回复，本轮未推进基线');
       }
       const comment=row=>({id:String(row.rpid_str??row.rpid),parent:String(row.parent_str??row.parent??0),author:row.member?.uname??'',authorId:String(row.mid??row.member?.mid??''),body:row.content?.message??'',createdAt:row.ctime});
-      items.push({remoteId:`comment:${video.aid}:${rootId}`,kind:'comment',title:(root.content?.message??'评论').slice(0,100),body:root.content?.message??'',url:`https://www.bilibili.com/video/${video.bvid}/#reply${rootId}`,payload:{bvid:video.bvid,aid:String(video.aid),root:rootId,author:root.member?.uname??'',video:{title:video.title,description:video.desc,owner:video.owner?.name},comments:[...replies.values()].map(comment).sort((a,b)=>a.id.localeCompare(b.id))}});
+      const latestTime=Math.max(0,...[root,...replies.values()].map(row=>Number(row.ctime)).filter(value=>Number.isFinite(value)&&value>0));
+      items.push({remoteId:`comment:${video.aid}:${rootId}`,kind:'comment',title:(root.content?.message??'评论').slice(0,100),body:root.content?.message??'',url:`https://www.bilibili.com/video/${video.bvid}/#reply${rootId}`,updatedAt:latestTime?new Date(latestTime*1000).toISOString():null,payload:{bvid:video.bvid,aid:String(video.aid),root:rootId,author:root.member?.uname??'',video:{title:video.title,description:video.desc,owner:video.owner?.name},comments:[...replies.values()].map(comment).sort((a,b)=>a.id.localeCompare(b.id))}});
     }
     if(items.length+items.reduce((n,x)=>n+x.payload.comments.length,0)!==totalCount)throw new Error('B站评论总数与已采集内容不一致，本轮不推进基线');
     return {complete:true,items,metadata:{title:video.title,bvid:video.bvid,threads:items.length,replies:items.reduce((n,x)=>n+x.payload.comments.length,0)}};

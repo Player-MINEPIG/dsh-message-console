@@ -149,7 +149,7 @@ test('preview resolves only explicit workspace files and the selected source rea
  for(const path of ['../outside.md','.local/private.md'])await assert.rejects(f.service.previewInput({source:{...source,materials:[{kind:'file',name:'bad',path}]},sourceId:f.source.id}));
  const blank=await f.service.previewInput({source:{...f.source,materials:[]}});assert.match(blank.serialized,/尚未选择实际内容项/);
 });
-test('reorganizing after input changes uses the new order, skips unanalysed baseline, and detects material changes',async t=>{
+test('input changes preserve completed analysis; future content uses the new order and material contents',async t=>{
  const f=await setup(t);f.service.workspaces.resolve=async id=>({id,path:f.directory});
  await writeFile(join(f.directory,'notes.md'),'FIRST');
  await f.service.saveSource({...f.source,materials:[{kind:'file',name:'notes',path:'notes.md'}]},f.source.id);
@@ -158,11 +158,12 @@ test('reorganizing after input changes uses the new order, skips unanalysed base
  f.setRows([entry('changed'),{...entry('second baseline'),remoteId:'comment:2'}]);await f.service.refresh(f.source.id);assert.equal(captured.length,1);
  const before=f.items().find(item=>item.remoteId==='comment:1').readVersion;
  const order=['content','materials','source','context'];await f.service.saveSource({...f.service.source(f.source.id),inputOrder:order},f.source.id);
- await f.service.organize(f.source.id);assert.equal(captured.length,2);assert.deepEqual(captured[1].inputOrder,order);
+ await f.service.organize(f.source.id);assert.equal(captured.length,1);
  assert.equal(f.items().find(item=>item.remoteId==='comment:1').readVersion,before);
  assert.equal(f.items().find(item=>item.remoteId==='comment:2').analysis,null);
- await writeFile(join(f.directory,'notes.md'),'SECOND');await f.service.organize(f.source.id);assert.equal(captured.length,3);assert.equal(captured[2].resolvedMaterials[0].text,'SECOND');
- await f.service.organize(f.source.id);assert.equal(captured.length,3);
+ await writeFile(join(f.directory,'notes.md'),'SECOND');await f.service.organize(f.source.id);assert.equal(captured.length,1);
+ f.setRows([entry('next change'),{...entry('second baseline'),remoteId:'comment:2'}]);await f.service.refresh(f.source.id);assert.equal(captured.length,2);assert.deepEqual(captured[1].inputOrder,order);assert.equal(captured[1].resolvedMaterials[0].text,'SECOND');
+ await f.service.organize(f.source.id);assert.equal(captured.length,2);
 });
 
 test('manual history organization includes untouched baseline once; refresh and scheduler keep changes scope',async t=>{

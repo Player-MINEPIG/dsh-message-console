@@ -110,3 +110,17 @@ test('GitHub status cards and boolean settings explain closed organization witho
   const inherited=render(SettingFields,{parameters:{includeClosed:{type:'boolean',default:false}},values:{},onChange(){},effective:{includeClosed:{value:true,origin:'global'}}});
   assert.match(inherited,/<option value="" selected="">继承（开启）/);
 });
+
+test('source list displays independent closed visibility and time direction controls with honest organization triggers',()=>{
+  const source={id:'s',name:'GitHub',platform:'github',connection:{ready:true}},props={source,state:{},action(){}};
+  const html=render(SourcePage,props);
+  assert.match(html,/显示全部（含已关闭 \/ 已合并）/);assert.match(html,/<input type="checkbox"\/>/);
+  assert.match(html,/aria-label="内容最后更新时间排序"/);assert.match(html,/<option value="updated-desc" selected="">最后更新：新到旧/);assert.match(html,/最后更新：旧到新/);
+  assert.doesNotMatch(render(SourcePage,{...props,source:{...source,platform:'bilibili'}}),/显示全部（含已关闭/);
+  for(const [trigger,label] of [['manual','手动触发'],['scheduled','定时触发'],[undefined,'触发来源未知']]) {
+    const report=render(SourcePage,{...props,source:{...source,lastOrganization:{trigger,status:'completed',scope:'changes',candidates:1,completed:1,failed:0,skipped:0}}});
+    assert.match(report,new RegExp(label));
+  }
+  const card=render(ItemCard,{item:{id:'i',status:'read',title:'item',updatedAt:'2025-01-01T00:00:00Z',changedAt:'2026-10-19T00:00:00Z'},onSelect(){}});
+  assert.match(card,/1月1日/);assert.doesNotMatch(card,/10月19日/);
+});

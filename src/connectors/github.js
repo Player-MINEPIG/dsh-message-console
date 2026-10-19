@@ -48,7 +48,7 @@ export class GitHubConnector {
     }
     if (source.types.includes('release')) {
       const releases = await this.pages(`${prefix}/releases?per_page=100`, { signal });
-      for (const row of releases) items.push({ remoteId: `release:${row.id}`, kind: 'release', title: row.name || row.tag_name, body: row.body ?? '', url: row.html_url, payload: { id: String(row.id), tag: row.tag_name, prerelease: row.prerelease, publishedAt: row.published_at } });
+      for (const row of releases) items.push({ remoteId: `release:${row.id}`, kind: 'release', title: row.name || row.tag_name, body: row.body ?? '', url: row.html_url, updatedAt: row.updated_at ?? row.published_at ?? row.created_at, payload: { id: String(row.id), tag: row.tag_name, prerelease: row.prerelease, publishedAt: row.published_at } });
     }
     return { complete: true, items };
   }
@@ -57,6 +57,7 @@ export class GitHubConnector {
     const row = issue ?? (await this.call(`${prefix}/issues/${number}`, { signal })).data;
     const comments = await this.pages(`${prefix}/issues/${number}/comments?per_page=100`, { signal });
     const payload = { number, state: String(row.state).toLowerCase(), author: row.user?.login, labels: (row.labels ?? []).map(label => typeof label === 'string' ? label : label.name).sort(), comments: comments.map(comment => ({ id: String(comment.id), author: comment.user?.login, body: comment.body, updatedAt: comment.updated_at })) };
+    let updatedAt = row.updated_at ?? row.created_at;
     if (kind === 'pr') {
       const pr = (await this.call(`${prefix}/pulls/${number}`, { signal })).data;
       payload.state = pr.merged || pr.merged_at ? 'merged' : String(pr.state).toLowerCase();
@@ -73,13 +74,14 @@ export class GitHubConnector {
       payload.reviews = reviews.map(review => ({ id: String(review.id), author: review.user?.login, body: review.body, state: review.state, commit: review.commit_id }));
       const latest = (await this.call(`${prefix}/pulls/${number}`, { signal })).data;
       if (latest.head.sha !== payload.head || (latest.merged || latest.merged_at ? 'merged' : String(latest.state).toLowerCase()) !== payload.state) throw new Error('采集期间PR提交或状态发生变化，请重新抓取');
+      updatedAt = latest.updated_at ?? pr.updated_at ?? updatedAt;
     }
-    return { remoteId: `${kind}:${row.id}`, kind, title: row.title, body: row.body ?? '', url: row.html_url, payload };
+    return { remoteId: `${kind}:${row.id}`, kind, title: row.title, body: row.body ?? '', url: row.html_url, updatedAt, payload };
   }
   async getItem(source, item, options) {
     if (item.kind === 'release') {
       const { data: row } = await this.call(`/repos/${source.target}/releases/tags/${encodeURIComponent(item.payload.tag)}`, options);
-      return { remoteId: `release:${row.id}`, kind: 'release', title: row.name || row.tag_name, body: row.body ?? '', url: row.html_url, payload: { id: String(row.id), tag: row.tag_name, prerelease: row.prerelease, publishedAt: row.published_at } };
+      return { remoteId: `release:${row.id}`, kind: 'release', title: row.name || row.tag_name, body: row.body ?? '', url: row.html_url, updatedAt: row.updated_at ?? row.published_at ?? row.created_at, payload: { id: String(row.id), tag: row.tag_name, prerelease: row.prerelease, publishedAt: row.published_at } };
     }
     return this.readDiscussion(source, item.payload.number, item.kind, options);
   }

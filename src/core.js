@@ -45,7 +45,7 @@ class ConsoleService {
     return this.#sourceView(required(this.store.source(id), "来源"));
   }
   items(id, query) {
-    return this.store.items(id, query);
+    return this.store.items(id, { showClosed: false, ...query });
   }
   item(id, version) {
     return this.store.header(id, version);
@@ -255,7 +255,8 @@ class ConsoleService {
     this.#jobs.set(key, promise);
     return promise;
   }
-  refresh(sourceId, { organize = true } = {}) {
+  refresh(sourceId, { organize = true, trigger = 'manual' } = {}) {
+    if (!['manual', 'scheduled'].includes(trigger)) throw new Error('整理触发来源无效');
     return this.#job(`source:${sourceId}`, async () => {
       const source = required(this.store.source(sourceId), "来源"), connector = required(this.connectors[source.platform], "连接器"), now = nowISO(this.clock);
       let fetched = false, fetchError;
@@ -279,13 +280,14 @@ class ConsoleService {
           this.#aborts.delete(controller);
         }
       } else fetchError = `等待连接器冷却至 ${source.retryAt}`;
-      const organization = organize ? await this.#organize(sourceId, { scope: "changes" }) : null;
+      const organization = organize ? await this.#organize(sourceId, { scope: "changes", trigger }) : null;
       return { fetched, error: fetchError ?? null, organization };
     }, { busyMessage: "此来源正在刷新或整理，请完成后再试。" });
   }
-  organize(sourceId, { scope = "changes" } = {}) {
+  organize(sourceId, { scope = "changes", trigger = 'manual' } = {}) {
     if (!["changes", "history"].includes(scope)) throw new Error("整理范围无效");
-    return this.#job(`source:${sourceId}`, () => this.#organize(sourceId, { scope }), { busyMessage: "此来源正在刷新或整理，请完成后再试。" });
+    if (!['manual', 'scheduled'].includes(trigger)) throw new Error('整理触发来源无效');
+    return this.#job(`source:${sourceId}`, () => this.#organize(sourceId, { scope, trigger }), { busyMessage: "此来源正在刷新或整理，请完成后再试。" });
   }
   #runRecord(source, item, prepared, kind = "automatic") {
     return {
@@ -308,7 +310,7 @@ class ConsoleService {
   #newRun(source, item, prepared, kind = "automatic") {
     return this.store.createRun(this.#runRecord(source, item, prepared, kind));
   }
-  async #organize(sourceId, { scope }) {
+  async #organize(sourceId, { scope, trigger }) {
     const source = required(this.store.source(sourceId), "来源"), settings = valuesOf(resolveSettings(this.store.settings(), source));
     let prepared, preparationError;
     try {
@@ -316,12 +318,12 @@ class ConsoleService {
     } catch (error) {
       preparationError = error;
     }
-    const { total, refs, unanalysed, excludedClosed } = this.store.candidates(sourceId, scope, prepared?.contextVersion, { includeClosed: source.platform !== "github" || settings.includeClosed }), summary = { sourceId, scope, contextVersion: prepared?.contextVersion ?? source.contextVersion, startedAt: nowISO(this.clock), total, excludedClosed, candidates: refs.length, completed: 0, failed: 0, skipped: 0, errors: [] };
+    const { total, refs, unanalysed, excludedClosed } = this.store.candidates(sourceId, scope, { includeClosed: source.platform !== "github" || settings.includeClosed }), summary = { sourceId, scope, trigger, contextVersion: prepared?.contextVersion ?? source.contextVersion, startedAt: nowISO(this.clock), total, excludedClosed, candidates: refs.length, completed: 0, failed: 0, skipped: 0, errors: [] };
     for (const ref of refs) {
       if (this.#closed) break;
       const item = required(this.store.item(ref.id), "内容项");
       if (item.version !== ref.version) continue;
-      const run = this.#newRun(source, item, prepared), controller = new AbortController();
+      const run = this.store.createRun({ ...this.#runRecord(source, item, prepared), trigger }), controller = new AbortController();
       this.#aborts.add(controller);
       try {
         if (preparationError) throw preparationError;
@@ -357,7 +359,7 @@ class ConsoleService {
     summary.finishedAt = nowISO(this.clock);
     summary.status = summary.failed ? summary.completed ? "partial" : "failed" : summary.completed ? "completed" : "skipped";
     summary.reason = null;
-    if (!refs.length) summary.reason = excludedClosed ? `默认跳过了 ${excludedClosed} 个已关闭或已合并内容，保留原文与处理历史。可在 GitHub 整理范围中启用。` : !total ? "还没有已采集的内容，请先刷新来源。" : scope === "changes" && unanalysed ? "没有待整理的新变化。首次基线仅在手动整理已有数据时处理。" : "当前内容及来源背景均已整理，无需重复运行。";
+    if (!refs.length) summary.reason = excludedClosed ? `默认跳过了 ${excludedClosed} 个已关闭或已合并内容，保留原文与处理历史。可在 GitHub 整理范围中启用。` : !total ? "还没有已采集的内容，请先刷新来源。" : scope === "changes" && unanalysed ? "没有待整理的新变化。首次基线仅在手动整理已有数据时处理。" : "当前内容均已整理，无需重复运行。新指导用于后续内容。";
     else if (summary.completed + summary.failed < refs.length) summary.reason = "部分候选项在整理期间已变化或插件已停止，本轮跳过，可稍后重试。";
     summary.errorsTruncated = summary.failed > summary.errors.length;
     this.store.updateSource(sourceId, { organizedAt: summary.finishedAt, lastOrganization: summary });
@@ -600,8 +602,8 @@ class ConsoleService {
       const settings = valuesOf(resolveSettings(this.store.settings(), source));
       if (source.retryAt && Date.parse(source.retryAt) > this.clock()) continue;
       const organize = !source.organizedAt || this.clock() - Date.parse(source.organizedAt) >= settings.organizeHours * 36e5;
-      if (!source.fetchedAt || this.clock() - Date.parse(source.fetchedAt) >= settings.fetchHours * 36e5) await this.refresh(source.id, { organize });
-      else if (organize) await this.organize(source.id, { scope: "changes" });
+      if (!source.fetchedAt || this.clock() - Date.parse(source.fetchedAt) >= settings.fetchHours * 36e5) await this.refresh(source.id, { organize, trigger: 'scheduled' });
+      else if (organize) await this.organize(source.id, { scope: "changes", trigger: 'scheduled' });
     }
   }
   async close() {

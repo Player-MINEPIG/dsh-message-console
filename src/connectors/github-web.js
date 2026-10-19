@@ -24,7 +24,7 @@ export function parseIssue(page,repo,row) {
   const comments=new Map();
   for(const timeline of [issue.timelineItems,issue.backTimelineItems])for(const edge of timeline?.edges??[]){const node=edge.node;if(node?.__typename==='IssueComment')comments.set(node.id,{id:String(node.databaseId??node.id),author:node.author?.login??'',body:node.body??'',updatedAt:node.lastEditedAt??node.createdAt});}
   const complete=comments.size===issue.totalCommentsCount;
-  return {remoteId:`issue:${issue.databaseId}`,kind:'issue',title:issue.title,body:issue.body??'',url:`https://github.com/${repo}/issues/${row.number}`,payload:{number:row.number,state:issue.state,comments:[...comments.values()],contextComplete:complete,contextLimit:complete?'已读取Issue正文及全部页面可见评论；未检查仓库代码或复现。':'讨论存在尚未取得的评论，仅展示已读取部分，不执行核实分析。'}};
+  return {remoteId:`issue:${issue.databaseId}`,kind:'issue',title:issue.title,updatedAt:issue.updatedAt??issue.createdAt,body:issue.body??'',url:`https://github.com/${repo}/issues/${row.number}`,payload:{number:row.number,state:issue.state,comments:[...comments.values()],contextComplete:complete,contextLimit:complete?'已读取Issue正文及全部页面可见评论；未检查仓库代码或复现。':'讨论存在尚未取得的评论，仅展示已读取部分，不执行核实分析。'}};
 }
 export function parsePull(page,repo,row) {
   const {$,payload}=page,pr=payload.pullRequestsLayoutRoute?.pullRequest;
@@ -40,7 +40,7 @@ export function parsePull(page,repo,row) {
   for(const element of $('include-fragment[src]').toArray()) {const src=$(element).attr('src');const match=src.match(/textarea_id=issue-(\d+)-body/);if(match)issueId=match[1];}
   // The web page does not prove review-thread exhaustion; retain partial data for reading only.
   const complete=false;
-  return {remoteId:`pr:${issueId??'web-'+row.number}`,kind:'pr',title:pr.title,body,url:`https://github.com/${repo}/pull/${row.number}`,payload:{number:row.number,head:pr.headSha,state:pr.state,author,comments,contextComplete:complete,contextLimit:'已读取网页讨论与PR diff；未执行代码或测试，未取完整仓库。尚未验证全部审查线程及diff对应提交的一致性，仅展示采集内容，不自动分析。'}};
+  return {remoteId:`pr:${issueId??'web-'+row.number}`,kind:'pr',title:pr.title,updatedAt:pr.updatedAt??pr.createdAt,body,url:`https://github.com/${repo}/pull/${row.number}`,payload:{number:row.number,head:pr.headSha,state:pr.state,author,comments,contextComplete:complete,contextLimit:'已读取网页讨论与PR diff；未执行代码或测试，未取完整仓库。尚未验证全部审查线程及diff对应提交的一致性，仅展示采集内容，不自动分析。'}};
 }
 function releasePage(page,repo) {
   const {$}=page;
@@ -82,7 +82,7 @@ export function parseRelease(page,repo,row) {
   if(canonical.tag!==row.tag||container.length!==1||!title||!publishedAt||!Number.isFinite(Date.parse(publishedAt))||!hasAssets)throw new Error('GitHub Release详情结构不完整或标签已变化');
   const body=container.find('[data-test-selector="body-content"]').clone();
   body.find('br').replaceWith('\n');body.find('p,li,h1,h2,h3,h4,h5,h6,pre,blockquote').append('\n');
-  return {remoteId:`release:web-${row.tag}`,kind:'release',title,body:body.text().trim(),url:`https://github.com${canonical.path}`,payload:{tag:row.tag,prerelease:container.find('.Label').toArray().some(e=>$(e).text().trim()==='Pre-release'),publishedAt,contextComplete:true,contextLimit:'已读取Release标题、说明及发布时间；不包含附件内容或关联讨论。'}};
+  return {remoteId:`release:web-${row.tag}`,kind:'release',title,updatedAt:publishedAt,body:body.text().trim(),url:`https://github.com${canonical.path}`,payload:{tag:row.tag,prerelease:container.find('.Label').toArray().some(e=>$(e).text().trim()==='Pre-release'),publishedAt,contextComplete:true,contextLimit:'已读取Release标题、说明及发布时间；不包含附件内容或关联讨论。'}};
 }
 export class GitHubWebConnector {
   constructor(transport,{maxPages=100,publicConnector=new GitHubConnector()}={}){this.transport=transport;this.maxPages=maxPages;this.publicConnector=publicConnector;}

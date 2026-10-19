@@ -17,7 +17,7 @@ async function fixture(t) {
   service=new ConsoleService({store,connectors:{github:connector},executor,workspaces:{resolve:async id=>({id,path:directory})}});
   const source=await service.saveSource({workspaceId:'ws',platform:'github',name:'GitHub',target:'o/r',types:['issue','pr','release']});
   t.after(async()=>{await service.close();await rm(directory,{recursive:true,force:true});});
-  return {directory,store,service,source,calls,setRows(value){rows=value;},items:()=>service.items(source.id,{pageSize:50}).items};
+  return {directory,store,service,source,calls,setRows(value){rows=value;},items:()=>service.items(source.id,{pageSize:50,showClosed:true}).items};
 }
 test('closed and merged GitHub items are collected but skipped by manual and automatic organization without runs',async t=>{
   const f=await fixture(t);f.setRows([row('issue',1,'CLOSED'),row('pr',2,'MERGED'),row('pr',3,'closed'),row('issue',4),row('release',5)]);
