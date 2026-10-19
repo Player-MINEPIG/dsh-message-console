@@ -562,7 +562,7 @@ class Store {
     });
   }
   receipt(sessionId) {
-    return parse(this.#get("SELECT data FROM receipts WHERE session_id=? ORDER BY rowid DESC LIMIT 1", sessionId)?.data);
+    return parse(this.#get("SELECT data FROM receipts WHERE session_id=? AND json_extract(data,'$.kind') IS NOT 'analysis-revision' ORDER BY rowid DESC LIMIT 1", sessionId)?.data);
   }
   #audit(event, detail, at = (/* @__PURE__ */ new Date()).toISOString()) {
     const value = { id: randomUUID(), at, event, ...detail };
@@ -598,6 +598,27 @@ class Store {
   }
   submit(binding, callId, submission, currentContext, at) {
     return this.#transaction(() => this.#submit(binding, callId, submission, currentContext, at));
+  }
+  reviseAnalysis(binding, callId, submission, run, at) {
+    return this.#transaction(() => {
+      const replay = this.replaySubmission(binding.sessionId, submission);
+      if (replay) return replay;
+      const original = required(this.run(binding.runId), "运行记录"), first = this.receipt(binding.sessionId);
+      if (!first || first.kind !== "analysis") throw new Error("本会话尚未提交分析，请先使用 dmc_submit_result");
+      const item = required(this.#itemRow(original.itemId), "内容项"), source = required(this.source(original.sourceId), "来源");
+      if (item.version !== original.version || item.version !== submission.version || source.contextVersion !== original.sourceContextVersion || source.contextVersion !== run.sourceContextVersion || source.workspaceId !== binding.workspaceId || run.contextVersion !== original.contextVersion) throw new Error("内容或来源资料已变化，请从当前内容新开分析会话");
+      if (!item.analysis || item.analysis_revision !== submission.expectedAnalysisRevision) throw new Error("分析已变化，请重新读取 analysis 后修订");
+      const result = { ...submission.analysis, processing: "analysis" };
+      const revision = { ...run.revision, originalReceiptId: first.id, previousAnalysisRevision: item.analysis_revision, previousAnalysis: parse(item.analysis) };
+      if (!this.#adopt(run, result)) throw new Error("分析已变化，请重新读取 analysis 后修订");
+      const invalidatedDraftIds = this.#all("SELECT id FROM drafts WHERE item_id=? AND status IN ('pending-supervision','ready','blocked')", original.itemId).map(row => row.id);
+      for (const id of invalidatedDraftIds) this.#updateDraft(id, { status: "stale" });
+      this.#writeRun({ ...run, revision, result, resultAdopted: true, processing: "analysis", status: "completed", finishedAt: at });
+      const receipt = { id: randomUUID(), sessionId: binding.sessionId, runId: run.id, kind: "analysis-revision", result, adopted: true, analysisRevision: item.analysis_revision + 1, revision, invalidatedDraftIds };
+      this.#run("INSERT INTO receipts VALUES(?,?,?,?,?)", receipt.id, binding.sessionId, submission.operationKey, requestHash(submission), json(receipt));
+      this.#audit("tool.analysis.revised", { sessionId: binding.sessionId, callId, runId: run.id, receiptId: receipt.id, originRunId: original.id, analysisRevision: receipt.analysisRevision }, at);
+      return receipt;
+    });
   }
   #submit(binding, callId, submission, currentContext, at) {
     const hash = requestHash(submission), existing = this.#get("SELECT request_hash,data FROM receipts WHERE session_id=? AND operation_key=?", binding.sessionId, submission.operationKey);

@@ -177,6 +177,24 @@ GitHub 列表默认隐藏已关闭 / 已合并内容，勾选“显示全部”�
 
 `dmc_submit_result` 是 Agent 结果的正式保存入口。自动工作角色提交分析、升级判断或监督结论；人工处理角色提交草稿。最终助手文字不作为落稿或监督结论的替代输入。一次提交使用固定 `operationKey`；精确重试返回原收据，同一个键提交不同内容会失败。
 
+已提交分析的原工作会话（writer、review、investigate）可以使用 `dmc_revise_analysis` 修订，例如收到稍后完成的验证报告。先读取 `dmc_read_item({section: "analysis"})`，把返回的 `analysisRevision` 作为 `expectedAnalysisRevision`，并沿用 `version`、`contextVersion`。提交完整的 `analysis` 和修订 `reason`，可附报告 ID 或链接 `evidenceRefs`；引用由 Agent 提供，不代表插件已核验报告。每次新修订使用新 `operationKey`，重试沿用原键和内容。
+
+修订会更新面板摘要并追加工作记录，原分析、原收据和真实会话历史保留。并发分析变化时先重新读取；内容或来源资料已变化时，原会话不能跨版本修订。旧的待监督、待审核或被拦截草稿会标为过期，已发送和发送状态待核实的记录保留。此工具只修订分析，不生成或发布回复，也不会自动接收任务插件的完成通知。
+
+```js
+const current = await tools.dmc_read_item({section: "analysis"});
+await tools.dmc_revise_analysis({
+  operationKey: "verification-followup-1",
+  version: current.version,
+  contextVersion: current.contextVersion,
+  expectedAnalysisRevision: current.analysisRevision,
+  analysis: {summary: "验证完成，问题已确认", importance: 2, reason: "报告中的证据支持该问题",
+    urgent: false, urgencyReason: null, intervention: "review", evidence: "confirmed"},
+  reason: "根据已读取的验证报告更新分析",
+  evidenceRefs: ["实际报告的 ID 或链接"]
+});
+```
+
 从插件内容入口创建的人工会话固定当前内容项和输入版本。读取同来源其他项不会改变存稿目标。需要给另一项存稿时，从那一项新开会话。新稿先显示“等待独立监督”；监督失败或会话失败后，已保存正文仍可查看，并可从草稿启动监督。监督通过后显示“等待你审核”。
 
 在已有 DSH 工作区中直接新建或继续普通会话，也可以使用这两个工具。先调用 `dmc_read_item({section: "sources"})` 查找当前工作区绑定的来源，再以 `sourceId` 查询 `section: "items"`，用返回的 `itemId` 读取 `section: "item"`。该返回值包含当前 `version` 和 `contextVersion`，后者也计入工作区资料文件的内容。普通会话仅可保存草稿，参数为 `{kind: "draft", operationKey, itemId, version, contextVersion, body}`。同一会话可为不同内容项分别存稿，来源改绑后权限随之更新。没有绑定来源时来源列表为空。

@@ -231,6 +231,12 @@ dmc_read_item({ itemId, version, section: 'body', offset: 0, length: 16000 })
 
 提交在短事务内验证绑定、输入版本、背景、角色和替换条件，保存结果、草稿、审计及收据。同一会话的相同操作键与内容返回原收据，内容不同时拒绝；自动阶段已有结果后不能换键重复终结。工具记录保留真实 `callId`。自动提交可结束当前轮，人工存稿后仍可继续讨论。
 
+`dmc_revise_analysis` 只注册给 writer、review、investigate，并在业务层再次检查真实角色。先用 `dmc_read_item({section: 'analysis'})` 读取绑定内容的当前分析和版本；该区段同时返回原会话的 `sessionVersion`、`sessionContextVersion`。修订要求本会话已提交过 analysis，指定完整新 analysis、reason、operationKey、version、contextVersion 和 expectedAnalysisRevision；可选 evidenceRefs 只存为 Agent 提供的引用，不查询或依赖任务插件。人工与普通工作区会话的草稿权限保持不变，监督和决策结论不能通过该工具改写。
+
+修订先重新计算包含文件资料的背景版本，在短事务内重查内容版本、来源背景、工作区及 analysisRevision。成功原子更新当前分析及关注状态，追加 `kind: 'analysis-revision'` 的 completed run、同 kind 收据和 `tool.analysis.revised` 审计。新 run 保存修订前分析、原始 run/receipt 引用、修订原因和证据引用；originSession 指向实际调用会话，不创建或重绑宿主身份。原 run、原收据不变，`requireSubmission` 排除修订收据，继续读取原工作阶段的结果。相同键和内容可在重启后精确重试，键冲突或并发版本冲突不追加 run。
+
+分析修订后，该项 pending-supervision/ready/blocked 草稿标为 stale；发送中、结果未知和已发送的记录不改写。修订工具不接收 draftBody，不授予发布权限。用户评价冻结新的分析快照并指向修订 run；原 Jev 决策保留在原 run，不复制为一次新决策。无需数据库 schema 升级。任务完成后的自动通知与会话唤醒不属于该工具的职责。
+
 DSH 运行器等待 idle、flush 后，通过 `requireSubmission(sessionId)` 读取已保存的收据。缺少收据时明确失败，不解析最终助手 JSON 兜底。Jev 调用和上下文不足等系统分流仍由系统保存，保留真实输入、输出和错误，不伪造 Agent 工具调用。提交成功后的会话失败不删除已落稿，也不把失败会话记成成功。
 
 ## 按行存储与迁移

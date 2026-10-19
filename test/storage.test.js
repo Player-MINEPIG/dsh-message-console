@@ -48,6 +48,110 @@ test('simultaneous fresh analyses preserve independent results and reject compet
   assert.deepEqual([a.adopted,b.adopted],[true,false]);assert.equal(f.store.item(f.id).analysis.summary,'a');assert.equal(f.store.draft(b.draftId).status,'stale');assert.equal(f.service.runs(f.id,{}).total,2);
 });
 
+async function revisionFixture(t) {
+  const f = await fixture(t), run = await f.bind('investigate', 'investigator');
+  const actor = { sessionId: 'investigator', actualCwd: f.directory, callId: 'revision-call' };
+  const first = await f.service.submitFromSession(actor, { kind: 'analysis', operationKey: 'initial', analysis: { ...analysis, summary: '远程验证排队中', evidence: 'insufficient' }, draftBody: '旧待审核草稿' });
+  f.store.updateRun(run.id, { status: 'completed', finishedAt: new Date().toISOString() });
+  const snapshot = await f.service.readFromSession(actor, { section: 'analysis' });
+  const input = { operationKey: 'report-revision', version: snapshot.version, contextVersion: snapshot.contextVersion, expectedAnalysisRevision: snapshot.analysisRevision, analysis: { ...analysis, summary: '远程验证完成：问题已确认' }, reason: '收到远程执行报告', evidenceRefs: ['report:fixture-result'] };
+  return { ...f, run, actor, first, input };
+}
+
+test('completed analysis can be revised with immutable history, current projections and feedback provenance', async t => {
+  const f = await revisionFixture(t), original = f.store.run(f.run.id), oldReceipt = f.service.requireSubmission(f.actor.sessionId);
+  f.store.handling(f.id, 'done'); f.store.markAllRead(f.source.id);
+  const receipt = await f.service.reviseAnalysisFromSession(f.actor, f.input);
+  assert.equal(receipt.adopted, true); assert.equal(receipt.analysisRevision, 2);
+  assert.equal(f.service.item(f.id).analysis.summary, f.input.analysis.summary);
+  assert.equal(f.service.items(f.source.id, {}).items[0].analysis.summary, f.input.analysis.summary);
+  assert.equal(f.service.item(f.id).attentionAcknowledged, false);
+  assert.notEqual(f.service.item(f.id).handling, 'done');
+  assert.deepEqual(f.store.run(f.run.id), original);
+  assert.deepEqual(f.service.requireSubmission(f.actor.sessionId), oldReceipt);
+  assert.equal(f.store.sessionBinding(f.actor.sessionId).runId, f.run.id);
+  const revisionRun = f.store.run(receipt.runId);
+  assert.equal(revisionRun.kind, 'analysis-revision'); assert.equal(revisionRun.status, 'completed');
+  assert.equal(revisionRun.revision.originRunId, f.run.id);
+  assert.equal(revisionRun.revision.previousAnalysis.summary, oldReceipt.result.summary);
+  assert.equal(revisionRun.sessions[0].sessionId, f.actor.sessionId);
+  assert.equal(f.service.runs(f.id, {}).total, 2);
+  assert.deepEqual(receipt.invalidatedDraftIds, [f.first.draftId]);
+  assert.equal(f.store.draft(f.first.draftId).status, 'stale');
+  assert.equal(f.store.draft(f.first.draftId).body, '旧待审核草稿');
+  const feedback = f.service.saveFeedback(f.id, { expectedRevision: 0, itemVersion: f.input.version, analysisRevision: 2, text: '已核实' });
+  assert.equal(feedback.runId, receipt.runId); assert.equal(feedback.analysisSnapshot.summary, f.input.analysis.summary);
+  await f.store.close(); await f.store.start();
+  assert.deepEqual(await f.service.reviseAnalysisFromSession(f.actor, f.input), receipt);
+  assert.equal(f.service.runs(f.id, {}).total, 2);
+  assert.deepEqual(f.service.requireSubmission(f.actor.sessionId), oldReceipt);
+  const next = await f.service.reviseAnalysisFromSession(f.actor, { ...f.input, expectedAnalysisRevision: 2, operationKey: 'followup-revision', analysis: { ...analysis, summary: '进一步核实' } });
+  assert.equal(next.analysisRevision, 3);
+  await assert.rejects(f.service.submitFromSession(f.actor, { kind: 'analysis', operationKey: 'another-initial', analysis }), /此阶段已有持久结果/);
+});
+
+test('revision retries are idempotent and competing writers cannot overwrite the winning analysis', async t => {
+  const f = await revisionFixture(t);
+  const receipts = await Promise.all(Array.from({ length: 6 }, () => f.service.reviseAnalysisFromSession(f.actor, f.input)));
+  assert.equal(new Set(receipts.map(r => r.id)).size, 1); assert.equal(f.service.item(f.id).analysisRevision, 2);
+  await assert.rejects(f.service.reviseAnalysisFromSession(f.actor, { ...f.input, reason: 'changed' }), /操作键/);
+  await assert.rejects(f.service.reviseAnalysisFromSession(f.actor, { ...f.input, operationKey: 'late' }), /分析已变化/);
+  const current = { ...f.input, expectedAnalysisRevision: 2 };
+  const race = await Promise.allSettled(['one', 'two'].map(operationKey => f.service.reviseAnalysisFromSession(f.actor, { ...current, operationKey, analysis: { ...analysis, summary: operationKey } })));
+  assert.equal(race.filter(result => result.status === 'fulfilled').length, 1);
+  assert.match(race.find(result => result.status === 'rejected').reason.message, /分析已变化/);
+  assert.equal(f.service.item(f.id).analysisRevision, 3); assert.equal(f.service.runs(f.id, {}).total, 3);
+});
+
+test('analysis revision enforces role, binding, prior submission, shape and current write permission', async t => {
+  const f = await revisionFixture(t);
+  await f.bind('human', 'human'); await f.bind('decision-escalation', 'decision'); await f.bind('writer', 'new-writer');
+  const runCount = f.service.runs(f.id, {}).total;
+  for (const sessionId of ['human', 'decision', 'ordinary']) await assert.rejects(f.service.reviseAnalysisFromSession({ ...f.actor, sessionId }, f.input), /无权|受管会话绑定/);
+  await assert.rejects(f.service.reviseAnalysisFromSession({ ...f.actor, sessionId: 'new-writer' }, f.input), /尚未提交分析/);
+  await assert.rejects(f.service.reviseAnalysisFromSession({ ...f.actor, actualCwd: '/another-workspace' }, f.input), /受管会话绑定/);
+  for (const change of [{ expectedAnalysisRevision: 0 }, { analysis: { ...analysis, importance: 4 } }, { reason: '' }, { evidenceRefs: [3] }, { itemId: 'other' }, { draftBody: 'unauthorized' }]) await assert.rejects(f.service.reviseAnalysisFromSession(f.actor, { ...f.input, ...change }));
+  await assert.rejects(f.service.reviseAnalysisFromSession({ ...f.actor, assertWritable: () => { throw new Error('read-only'); } }, f.input), /read-only/);
+  let checks = 0;
+  await assert.rejects(f.service.reviseAnalysisFromSession({ ...f.actor, assertWritable: () => { if (++checks === 2) throw new Error('plan-mode'); } }, f.input), /plan-mode/);
+  assert.equal(f.service.item(f.id).analysisRevision, 1); assert.equal(f.service.runs(f.id, {}).total, runCount);
+});
+
+test('revision rejects changed content and cannot switch a bound session to the new content version', async t => {
+  const f = await revisionFixture(t);
+  f.store.applyFetch(f.source.id, [{ ...f.item, body: '后续新原文' }], {}, new Date().toISOString(), fingerprint);
+  const state = await f.service.readFromSession(f.actor, { section: 'analysis' });
+  assert.notEqual(state.version, state.sessionVersion);
+  for (const version of [f.input.version, state.version]) await assert.rejects(f.service.reviseAnalysisFromSession(f.actor, { ...f.input, version }), /内容或来源资料已变化/);
+  assert.equal(f.service.runs(f.id, {}).total, 1);
+});
+
+test('revision rejects source changes and a workspace rebind during preparation', async t => {
+  const f = await revisionFixture(t);
+  const resolveWorkspace = f.service.workspaces.resolve;
+  f.service.workspaces.resolve = async id => { f.store.updateSource(f.source.id, { workspaceId: 'elsewhere' }); return resolveWorkspace(id); };
+  await assert.rejects(f.service.reviseAnalysisFromSession(f.actor, f.input), /已变化/);
+  f.store.updateSource(f.source.id, { workspaceId: 'ws' }); f.service.workspaces.resolve = resolveWorkspace;
+  await f.service.saveSource({ ...f.service.source(f.source.id), context: '新背景' }, f.source.id);
+  const state = await f.service.readFromSession(f.actor, { section: 'analysis' });
+  assert.notEqual(state.contextVersion, state.sessionContextVersion);
+  for (const contextVersion of [f.input.contextVersion, state.contextVersion]) await assert.rejects(f.service.reviseAnalysisFromSession(f.actor, { ...f.input, contextVersion }), /内容或来源资料已变化/);
+  assert.equal(f.service.runs(f.id, {}).total, 1);
+});
+
+test('revision checks file material contents even when source configuration has not changed', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.directory, 'notes.md'), 'first version');
+  await f.service.saveSource({ ...f.service.source(f.source.id), materials: [{ kind: 'file', name: 'notes', path: 'notes.md' }] }, f.source.id);
+  await f.bind('review', 'reviewer');
+  const actor = { sessionId: 'reviewer', actualCwd: f.directory };
+  await f.service.submitFromSession(actor, { kind: 'analysis', operationKey: 'first', analysis });
+  const state = await f.service.readFromSession(actor, { section: 'analysis' });
+  await writeFile(join(f.directory, 'notes.md'), 'changed material');
+  await assert.rejects(f.service.reviseAnalysisFromSession(actor, { operationKey: 'revise', version: state.version, contextVersion: state.contextVersion, expectedAnalysisRevision: state.analysisRevision, analysis, reason: 'later evidence' }), /内容或来源资料已变化/);
+  assert.equal(f.service.item(f.id).analysisRevision, 1);
+});
+
 test('human binding survives reopen, reads source IDs and saves only its original item, immutable replacement uses body CAS',async t=>{
   const f=await fixture(t);await f.bind('human');const other={...f.item,remoteId:'comment:2',title:'其他评论'};f.store.applyFetch(f.source.id,[f.item,other],{},new Date().toISOString(),fingerprint);
   await f.store.close();await f.store.start();assert.ok(f.service.sessionBinding('human',f.directory));assert.equal(f.service.sessionBinding('human','/elsewhere'),null);

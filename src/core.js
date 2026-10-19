@@ -14,6 +14,10 @@ const required = (value, label) => {
 };
 const errorText = (error) => String(error?.publicMessage ?? error?.message ?? error).slice(0, 1e3);
 const roles = ["writer", "review", "investigate", "decision-escalation", "supervisor", "human"];
+const analysisRoles = ["writer", "review", "investigate"];
+function validateAnalysis(a) {
+  if (!a || typeof a.summary !== "string" || typeof a.reason !== "string" || !Number.isInteger(a.importance) || a.importance < 0 || a.importance > 3 || typeof a.urgent !== "boolean" || !["none", "human", "review"].includes(a.intervention) || !["confirmed", "inferred", "insufficient"].includes(a.evidence) || a.urgencyReason != null && typeof a.urgencyReason !== "string" || a.urgent && !a.urgencyReason?.trim()) throw new Error("分析结果不符合约定结构");
+}
 class ConsoleService {
   #jobs = /* @__PURE__ */ new Map();
   #aborts = /* @__PURE__ */ new Set();
@@ -406,6 +410,14 @@ class ConsoleService {
     if (binding.role === "learning") throw new Error("学习会话请使用专用学习查询工具");
     const run = required(this.store.run(binding.runId), "运行记录"), itemId = args.itemId ?? run.itemId, section = args.section ?? "item";
     if (section === "items") return this.store.items(binding.sourceId, args);
+    if (section === "analysis") {
+      if (itemId !== run.itemId || args.version && args.version !== run.version) throw new Error("分析修订查询仅限本会话绑定内容");
+      const item = required(this.store.header(run.itemId), "内容项"), source = required(this.store.source(run.sourceId), "来源");
+      if (source.workspaceId !== binding.workspaceId) throw new Error("来源工作区已变化，请从当前内容新开会话");
+      const prepared = await this.#prepare(source);
+      this.#assertWorkspaceSource(source);
+      return { itemId: item.id, version: item.version, contextVersion: prepared.contextVersion, analysisRevision: item.analysisRevision, analysis: item.analysis, sessionVersion: run.version, sessionContextVersion: run.contextVersion };
+    }
     const item = required(this.store.header(itemId, args.version ?? (itemId === run.itemId ? run.version : void 0)), "内容项");
     if (item.sourceId !== binding.sourceId) throw new Error("只能查询此会话来源的内容");
     const version = item.version;
@@ -430,8 +442,7 @@ class ConsoleService {
     const allowed = binding.role === "supervisor" ? "supervision" : binding.role === "decision-escalation" ? "decision" : binding.role === "human" ? "draft" : "analysis";
     if (submission.kind !== allowed) throw new Error("会话角色无权提交此结果");
     if (submission.kind === "analysis") {
-      const a = submission.analysis;
-      if (!a || typeof a.summary !== "string" || typeof a.reason !== "string" || !Number.isInteger(a.importance) || a.importance < 0 || a.importance > 3 || typeof a.urgent !== "boolean" || !["none", "human", "review"].includes(a.intervention) || !["confirmed", "inferred", "insufficient"].includes(a.evidence) || a.urgent && !a.urgencyReason) throw new Error("分析结果不符合约定结构");
+      validateAnalysis(submission.analysis);
       if (submission.draftBody !== void 0 && submission.draftBody !== null && typeof submission.draftBody !== "string") throw new Error("草稿正文无效");
     }
     if (submission.kind === "draft" && (typeof submission.body !== "string" || !submission.body.trim())) throw new Error("草稿正文不能为空");
@@ -447,6 +458,29 @@ class ConsoleService {
     assertWritable?.();
     const receipt = this.store.submit(binding, callId, submission, prepared.contextVersion, nowISO(this.clock));
     return receipt;
+  }
+  async reviseAnalysisFromSession({ sessionId, callId, actualCwd, assertWritable }, input) {
+    const binding = this.#binding(sessionId, actualCwd);
+    if (!analysisRoles.includes(binding.role)) throw new Error("此会话角色无权修订分析");
+    const allowed = ["operationKey", "version", "contextVersion", "expectedAnalysisRevision", "analysis", "reason", "evidenceRefs"];
+    if (!input || Object.keys(input).some(key => !allowed.includes(key))) throw new Error("分析修订参数无效");
+    for (const key of ["operationKey", "version", "contextVersion", "reason"]) if (typeof input[key] !== "string" || !input[key].trim()) throw new Error(`分析修订需要有效 ${key}`);
+    if (input.operationKey.length > 160 || JSON.stringify(input).length > 2e5) throw new Error("修订结果过大或操作键过长");
+    if (!Number.isSafeInteger(input.expectedAnalysisRevision) || input.expectedAnalysisRevision < 1) throw new Error("请先读取当前 analysisRevision");
+    if (input.evidenceRefs !== undefined && (!Array.isArray(input.evidenceRefs) || input.evidenceRefs.length > 20 || input.evidenceRefs.some(ref => typeof ref !== "string" || !ref.trim() || ref.length > 1000))) throw new Error("修订证据引用无效");
+    validateAnalysis(input.analysis);
+    assertWritable?.();
+    const original = required(this.store.run(binding.runId), "运行记录"), source = required(this.store.source(original.sourceId), "来源");
+    if (source.workspaceId !== binding.workspaceId) throw new Error("来源工作区已变化，请从当前内容新开会话");
+    const submission = { ...input, kind: "analysis-revision" }, replay = this.store.replaySubmission(binding.sessionId, submission);
+    if (replay) return replay;
+    const prepared = await this.#prepare(source);
+    this.#assertWorkspaceSource(source);
+    if (input.version !== original.version || prepared.contextVersion !== original.contextVersion || input.contextVersion !== original.contextVersion) throw new Error("内容或来源资料已变化，请从当前内容新开分析会话");
+    const item = required(this.store.header(original.itemId), "内容项"), at = nowISO(this.clock);
+    const run = { ...this.#runRecord(source, item, prepared, "analysis-revision"), baseAnalysisRevision: input.expectedAnalysisRevision, inputSnapshot: original.inputSnapshot, originSession: { sessionId: binding.sessionId, role: binding.role, workspaceId: binding.workspaceId, at }, revision: { originRunId: original.id, reason: input.reason, evidenceRefs: input.evidenceRefs ?? [] } };
+    assertWritable?.();
+    return this.store.reviseAnalysis(binding, callId, submission, run, at);
   }
   async #workspaceScope({ sessionId, actualCwd }) {
     if (this.store.sessionBinding(String(sessionId))) throw new Error("受管会话必须使用原角色绑定");
