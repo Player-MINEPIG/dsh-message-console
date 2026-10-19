@@ -1,8 +1,9 @@
 import { createModelCatalog } from './model-catalog.js';
 import { assembleInput, serializeInput } from './input-assembly.js';
 import { postHistoryText, learningGuidanceText } from './source-context.js';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { WorkflowExecutor } from './executor.js';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { queueConversationBackground, assertStorageOutsideWorkspace } from './agent-tools.js';
 
 function stagePreset(instructions,postHistoryInstruction) {
@@ -13,6 +14,37 @@ function stagePreset(instructions,postHistoryInstruction) {
     { id: 'input', kind: 'input', enabled: true },
     { id: 'post-history', kind: 'dsh.text', inputMode:'text', enabled:true, role:'user', lifetime:'request', delivery:'pre-step', text:postHistoryInstruction || postHistoryText() },
   ] };
+}
+
+export function createOriginContinuation(ctx, service, attachAgentTools) {
+  const analysisRoles = ['writer', 'review', 'investigate'];
+  const capture = agent => {
+    const sessionId = String(agent.session.id), binding = service.sessionBinding(sessionId, agent.session.header.cwd);
+    if (!binding || !analysisRoles.includes(binding.role)) return;
+    if ([binding.runId,binding.workspaceId,binding.sourceId,binding.itemId,binding.version,binding.contextVersion].some(value => typeof value !== 'string' || !value)) throw new Error('原分析会话缺少持久上下文引用，不能登记续接');
+    const assembly = ctx.dshPromptAssembler.store.selection(sessionId);
+    if (!assembly) throw new Error('原分析会话提示词装配记录不存在，不能登记续接');
+    return { version: 1, sessionId, runId: binding.runId, role: binding.role, workspaceId: binding.workspaceId, sourceId: binding.sourceId, itemId: binding.itemId, itemVersion: binding.version, contextVersion: binding.contextVersion, assemblyId: assembly.id, assemblyHash: createHash('sha256').update(JSON.stringify(assembly)).digest('hex') };
+  };
+  return {
+    id: 'dmc-analysis-v1',
+    capture,
+    async resume(_agentCtx, agent, data) {
+      const current = capture(agent);
+      if (!current || !data || typeof data !== 'object' || Array.isArray(data) || Object.keys(data).length !== Object.keys(current).length || Object.entries(current).some(([key,value]) => data[key] !== value))
+        throw new Error('原分析会话角色、工作区或提示词上下文已变化，不能续接');
+      const analysis = await service.readFromSession({sessionId:current.sessionId,actualCwd:agent.session.header.cwd},{section:'analysis'});
+      if (analysis.version !== current.itemVersion || analysis.contextVersion !== current.contextVersion)
+        throw new Error('内容或来源资料已变化，请从当前内容新开分析会话');
+      const receipt = service.store.receipt(current.sessionId);
+      if (receipt && receipt.kind !== 'analysis') throw new Error('原会话持久结果与分析角色不匹配');
+      await assertStorageOutsideWorkspace(service.storageDirectory(),agent.session.header.cwd);
+      await attachAgentTools(agent);
+      const source = {kind:'dsh-message-console',form:'instructions',purpose:'analysis-continuation'};
+      if (!agent.inbox.nextStep.some(message => message.source?.kind === source.kind && message.source?.purpose === source.purpose))
+        agent.inject(createUserMessage({source,content:[{type:'text',text:`你正在原 ${current.role} 会话续接异步任务结果。保留原内容、来源资料和工作区绑定；先核对实际收到的报告证据，再保存完整业务分析，不能把等待状态当作完成。${receipt ? '此会话已经通过 dmc_submit_result 保存过首次 analysis。先调用 dmc_read_item({section:"analysis"}) 读取当前 analysisRevision/version/contextVersion，再调用 dmc_revise_analysis 保存完整修订、原因和报告引用；不要重复首次提交或覆盖旧收据。' : '此会话尚未保存首次分析。使用 dmc_submit_result 保存 kind=analysis 的完整结果；首次提交后需要修改时才使用 dmc_revise_analysis。'}保存结果不授权对外发布。`}]}));
+    },
+  };
 }
 
 export function createDshWorkspaces(ctx) {
@@ -82,7 +114,13 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
       const events = agent.session.snapshotEvents().slice(before);
       const end = events.findLast(event => event.type === 'turn/end');
       if (end?.data.reason.kind !== 'completed') throw sessionFailure(end?.data.reason, sessionId);
-      return role === 'learning' ? domain().requireLearningSubmission(sessionId) : domain().requireSubmission(sessionId);
+      if (role === 'learning') return domain().requireLearningSubmission(sessionId);
+      try { return domain().requireSubmission(sessionId); }
+      catch (error) {
+        if (['writer','review','investigate'].includes(role) && ctx.get?.('taskSystem')?.pendingOriginReturns?.(sessionId)?.length)
+          return {pendingTaskReturn:true,sessionId};
+        throw error;
+      }
     } finally {
       clearTimeout(timer); signal?.removeEventListener('abort', cancel);
       try { await ctx.sessions.flush(agent.session); } finally {

@@ -60,6 +60,7 @@ export class WorkflowExecutor {
           ? `汇总此release的变化与关注原因，不拟发布正文，draftBody必须null。${SCHEMA}`
           : `依据明确事实拟回复，不替用户决定立场。风格：${settings.replyStyle}。${SCHEMA}`;
     const receipt = await stage(item.kind === 'pr' ? 'review' : item.kind === 'issue' ? 'investigate' : 'writer', instructions);
+    if (receipt.pendingTaskReturn === true) return receipt;
     const result = { ...validateAnalysis(receipt.result), processing: 'analysis', committed: true, ...(receipt.draftId ? { draftId: receipt.draftId } : {}) };
     if (receipt.draft && receipt.adopted !== false) await this.supervise({ runId, draft: receipt.draft, source, item, settings, signal, recordSession });
     return result;

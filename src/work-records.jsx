@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { time, roleLabel, ModelWorkflowInfo, useRemoteResource, ResourceError, ListPagination } from './ui-shared.jsx';
-const statuses={open:'会话进行中',running:'处理中',completed:'已完成',failed:'失败',interrupted:'已中断',stale:'输入已变化，本轮未采用'};
+const statuses={open:'会话进行中',running:'处理中','waiting-for-task-return':'等待任务回报',completed:'已完成',failed:'失败',interrupted:'已中断',stale:'输入已变化，本轮未采用'};
 export function WorkRecords({item,root,revision,openSession}) {
   const [page,setPage]=useState(1),resource=useRemoteResource(`${root}/runs?page=${page}&pageSize=10`,{revision,pollMs:5000}),data=resource.data;
   const sessionLink=(session,index)=><button className="dmc-session" key={session.sessionId+index} onClick={()=>openSession(session.sessionId)}>{roleLabel(session.role,item.kind)}<small>{time(session.at)} ↗</small></button>;

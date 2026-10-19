@@ -456,6 +456,9 @@ class Store {
     const refs = rows.filter(row => includeClosed || !(['issue','pr'].includes(row.kind) && (['closed','merged'].includes(String(row.state).toLowerCase()) || row.merged === 1))).map(({id,version}) => ({id,version}));
     return { total, refs, excludedClosed: rows.length - refs.length, unanalysed: this.#get("SELECT count(*) n FROM items WHERE source_id=? AND analysis IS NULL", sourceId).n };
   }
+  waitingTaskReturn(itemId, version, contextVersion) {
+    return this.#get("SELECT id FROM runs WHERE item_id=? AND status='waiting-for-task-return' AND json_extract(data,'$.version')=? AND json_extract(data,'$.contextVersion')=? LIMIT 1",itemId,version,contextVersion)?.id;
+  }
   #writeRun(run) {
     const { decision, sourceSnapshot, ...data } = run;
     this.#run("INSERT INTO runs VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data,decision=coalesce(excluded.decision,runs.decision),source_snapshot=coalesce(excluded.source_snapshot,runs.source_snapshot)", run.id, run.itemId, run.status ?? "running", run.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(), json(data), decision ? json(decision) : null, sourceSnapshot ? json(sourceSnapshot) : null);
@@ -634,7 +637,14 @@ class Store {
       receipt.result = { ...submission.analysis, processing: "analysis" };
       receipt.adopted = fresh && this.#adopt(run, receipt.result);
       receipt.analysisId = receipt.id;
-      this.#writeRun({ ...run, resultAdopted: receipt.adopted, result: receipt.result });
+      this.#writeRun({ ...run, resultAdopted: receipt.adopted, result: receipt.result, ...(run.status === "waiting-for-task-return" ? {status:receipt.adopted ? "completed" : "stale",processing:"analysis",finishedAt:at,error:null} : {}) });
+      const organization = source.lastOrganization;
+      if (run.status === "waiting-for-task-return" && organization?.waitingRunIds?.includes(run.id)) {
+        const waitingRunIds = organization.waitingRunIds.filter(id => id !== run.id), waiting = waitingRunIds.length;
+        const completed = organization.completed + (receipt.adopted ? 1 : 0), skipped = organization.skipped + (receipt.adopted ? 0 : 1);
+        const status = organization.failed ? completed || waiting ? "partial" : "failed" : waiting ? "waiting-for-task-return" : completed ? "completed" : "skipped";
+        this.#run("UPDATE sources SET data=? WHERE id=?",json({...source,lastOrganization:{...organization,waitingRunIds,waiting,completed,skipped,status,reason:waiting ? organization.reason : null}}),source.id);
+      }
       if (item.kind !== "release" && submission.analysis.intervention !== "human" && submission.draftBody?.trim()) receipt.draft = this.#newDraft(run, submission.draftBody, receipt.adopted ? "pending-supervision" : "stale", at);
     } else if (submission.kind === "draft") {
       if (submission.replacesDraftId) {
