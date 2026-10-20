@@ -327,8 +327,6 @@ class ConsoleService {
       if (this.#closed) break;
       const item = required(this.store.item(ref.id), "内容项");
       if (item.version !== ref.version) continue;
-      const waitingRunId = prepared && this.store.waitingTaskReturn(item.id,item.version,prepared.contextVersion);
-      if (waitingRunId) { summary.waitingRunIds = [...(summary.waitingRunIds ?? []),waitingRunId]; continue; }
       const run = this.store.createRun({ ...this.#runRecord(source, item, prepared), trigger }), controller = new AbortController();
       this.#aborts.add(controller);
       try {
@@ -339,17 +337,6 @@ class ConsoleService {
             this.bindSession({ sessionId, runId: run.id, role, workspaceId: source.workspaceId, cwd: workspace.path });
           }
         }, recordDecision: async (decision) => this.store.updateRun(run.id, { decision }) });
-        if (result?.pendingTaskReturn === true) {
-          const receipt = this.store.receipt(result.sessionId), current = this.store.run(run.id);
-          if (receipt?.kind === "analysis") {
-            this.store.updateRun(run.id,{status:current.resultAdopted ? "completed" : "stale",processing:"analysis",finishedAt:nowISO(this.clock)});
-            if (current.resultAdopted) summary.completed++;
-          } else {
-            this.store.updateRun(run.id,{status:"waiting-for-task-return",waitingSessionId:result.sessionId,error:null});
-            summary.waitingRunIds = [...(summary.waitingRunIds ?? []),run.id];
-          }
-          continue;
-        }
         if (!result || typeof result.summary !== "string" || !Number.isInteger(result.importance) || result.importance < 0 || result.importance > 3) throw new Error("分析输出结构无效");
         let applied;
         if (result.committed) {
@@ -372,18 +359,11 @@ class ConsoleService {
         this.#aborts.delete(controller);
       }
     }
-    if (summary.waitingRunIds) {
-      const finished = summary.waitingRunIds.filter(id => this.store.run(id).status !== "waiting-for-task-return");
-      summary.completed += finished.filter(id => this.store.run(id).status === "completed").length;
-      summary.waitingRunIds = summary.waitingRunIds.filter(id => !finished.includes(id));
-      summary.waiting = summary.waitingRunIds.length;
-    }
-    summary.skipped = total - summary.completed - summary.failed - (summary.waiting ?? 0);
+    summary.skipped = total - summary.completed - summary.failed;
     summary.finishedAt = nowISO(this.clock);
-    summary.status = summary.failed ? summary.completed || summary.waiting ? "partial" : "failed" : summary.waiting ? "waiting-for-task-return" : summary.completed ? "completed" : "skipped";
+    summary.status = summary.failed ? summary.completed ? "partial" : "failed" : summary.completed ? "completed" : "skipped";
     summary.reason = null;
     if (!refs.length) summary.reason = excludedClosed ? `默认跳过了 ${excludedClosed} 个已关闭或已合并内容，保留原文与处理历史。可在 GitHub 整理范围中启用。` : !total ? "还没有已采集的内容，请先刷新来源。" : scope === "changes" && unanalysed ? "没有待整理的新变化。首次基线仅在手动整理已有数据时处理。" : "当前内容均已整理，无需重复运行。新指导用于后续内容。";
-    else if (summary.waiting) summary.reason = "已派发的任务仍在等待回报，原分析会话收到报告后继续保存结果。";
     else if (summary.completed + summary.failed < refs.length) summary.reason = "部分候选项在整理期间已变化或插件已停止，本轮跳过，可稍后重试。";
     summary.errorsTruncated = summary.failed > summary.errors.length;
     this.store.updateSource(sourceId, { organizedAt: summary.finishedAt, lastOrganization: summary });

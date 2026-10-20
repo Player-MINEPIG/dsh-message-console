@@ -153,5 +153,4 @@ export async function installAgentTools(ctx, service) {
     registrations.clear();
   });
   for (const agent of ctx.agents.list()) await attach(agent);
-  return attach;
 }

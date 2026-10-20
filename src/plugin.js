@@ -3,7 +3,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { Store } from './store.js';
 import { ConsoleService } from './core.js';
-import { createDshExecutor, createDshWorkspaces, createOriginContinuation } from './dsh.js';
+import { createDshExecutor, createDshWorkspaces } from './dsh.js';
 import { createHandler } from './http.js';
 import { GitHubConnector } from './connectors/github.js';
 import { BrowserConnector } from './connectors/browser.js';
@@ -33,12 +33,7 @@ export async function apply(ctx, config) {
   let service;
   const executor = createDshExecutor(ctx, { createUserMessage, SessionId, service: () => service, timeoutMs: config.timeoutMs, workspaces });
   service = new ConsoleService({ store, connectors, executor, workspaces });
-  const attachAgentTools = await installAgentTools(ctx, service);
-  ctx.inject(['taskSystem'], continuationCtx => {
-    const taskSystem = continuationCtx.get('taskSystem');
-    if (typeof taskSystem?.registerOriginContinuation === 'function')
-      continuationCtx.effect(() => taskSystem.registerOriginContinuation(createOriginContinuation(ctx, service, attachAgentTools)));
-  });
+  await installAgentTools(ctx, service);
   ctx.provide('messageConsole', service);
   ctx.effect(() => () => service.close());
   ctx.inject(['webServer', 'connection'], web => {
