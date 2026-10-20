@@ -383,7 +383,7 @@ class ConsoleService {
       }
     });
   }
-  bindSession(input) {
+  bindSession(input, options) {
     if (!roles.includes(input.role)) throw new Error("会话角色无效");
     const run = required(this.store.run(input.runId), "运行记录"), source = required(this.store.source(run.sourceId), "来源");
     if (input.workspaceId !== run.workspaceId || source.workspaceId !== input.workspaceId || typeof input.cwd !== "string" || !input.cwd) throw new Error("会话工作区不匹配");
@@ -393,20 +393,30 @@ class ConsoleService {
       if (draft.runId !== run.id) throw new Error("监督草稿归属不匹配");
       extra = { bodyHash: draft.bodyHash };
     }
-    return this.store.bindSession({ ...input, ...extra });
+    return this.store.bindSession({ ...input, ...extra },options);
   }
+  analysisSessions(runId, role) {
+    return analysisRoles.includes(role) ? this.store.analysisSessions(runId,role) : [];
+  }
+  analysisRoundContext(runId) {
+    const run = required(this.store.run(runId),"运行记录"), item = required(this.store.header(run.itemId),"内容项");
+    return { runId,version:run.version,contextVersion:run.contextVersion,analysisRevision:item.analysisRevision,analysis:item.analysis,history:this.store.runs(item.id,{pageSize:10}).items.filter(entry=>entry.id!==runId).map(entry=>({runId:entry.id,version:entry.version,status:entry.status,sessions:entry.sessions})) };
+  }
+  restoreSessionBinding(sessionId, runId, previous) { return this.store.restoreSessionBinding(sessionId,runId,previous); }
   sessionBinding(sessionId, actualCwd) {
     const binding = this.store.sessionBinding(String(sessionId));
     if (!binding || binding.legacy || (!binding.runId && binding.role !== "learning")) return null;
     if (actualCwd !== void 0 && resolve(actualCwd) !== resolve(binding.cwd)) return null;
     return binding;
   }
-  #binding(sessionId, actualCwd) {
-    return required(this.sessionBinding(sessionId, actualCwd), "受管会话绑定");
+  #binding(sessionId, actualCwd, runId) {
+    const binding = required(this.sessionBinding(sessionId, actualCwd),"受管会话绑定");
+    if (runId !== undefined && binding.runId !== runId) throw new Error("会话分析轮次已变化，请重新读取当前轮次");
+    return binding;
   }
-  async readFromSession({ sessionId, actualCwd }, args = {}) {
+  async readFromSession({ sessionId, actualCwd, runId: expectedRunId }, args = {}) {
     if (!this.store.sessionBinding(String(sessionId))) return this.#readFromWorkspace({ sessionId, actualCwd }, args);
-    const binding = this.#binding(sessionId, actualCwd);
+    const binding = this.#binding(sessionId, actualCwd, expectedRunId);
     if (binding.role === "learning") throw new Error("学习会话请使用专用学习查询工具");
     const run = required(this.store.run(binding.runId), "运行记录"), itemId = args.itemId ?? run.itemId, section = args.section ?? "item";
     if (section === "items") return this.store.items(binding.sourceId, args);
@@ -416,6 +426,7 @@ class ConsoleService {
       if (source.workspaceId !== binding.workspaceId) throw new Error("来源工作区已变化，请从当前内容新开会话");
       const prepared = await this.#prepare(source);
       this.#assertWorkspaceSource(source);
+      this.store.assertSessionBinding(binding);
       return { itemId: item.id, version: item.version, contextVersion: prepared.contextVersion, analysisRevision: item.analysisRevision, analysis: item.analysis, sessionVersion: run.version, sessionContextVersion: run.contextVersion };
     }
     const item = required(this.store.header(itemId, args.version ?? (itemId === run.itemId ? run.version : void 0)), "内容项");
@@ -433,9 +444,9 @@ class ConsoleService {
     }
     throw new Error("查询区段无效");
   }
-  async submitFromSession({ sessionId, callId, actualCwd, assertWritable }, submission) {
+  async submitFromSession({ sessionId, callId, actualCwd, assertWritable, runId: expectedRunId }, submission) {
     if (!this.store.sessionBinding(String(sessionId))) return this.#submitFromWorkspace({ sessionId, callId, actualCwd, assertWritable }, submission);
-    const binding = this.#binding(sessionId, actualCwd);
+    const binding = this.#binding(sessionId, actualCwd, expectedRunId);
     if (binding.role === "learning") throw new Error("学习会话不能保存内容稿件或分析结果");
     const run = required(this.store.run(binding.runId), "运行记录");
     if (!submission || typeof submission.operationKey !== "string" || !submission.operationKey.trim() || submission.operationKey.length > 160) throw new Error("提交需要有效操作键");
@@ -450,7 +461,7 @@ class ConsoleService {
     if (submission.kind === "supervision" && (typeof submission.approved !== "boolean" || typeof submission.reason !== "string" || !submission.reason.trim())) throw new Error("监督结果无效");
     if (JSON.stringify(submission).length > 2e5) throw new Error("提交结果过大");
     assertWritable?.();
-    const replay = this.store.replaySubmission(binding.sessionId, submission);
+    const replay = this.store.replaySubmission(binding.sessionId, submission,binding.runId);
     if (replay) return replay;
     const source = required(this.store.source(run.sourceId), "来源");
     if (source.workspaceId !== binding.workspaceId) throw new Error("来源工作区已变化，请从当前内容新开会话");
@@ -459,8 +470,8 @@ class ConsoleService {
     const receipt = this.store.submit(binding, callId, submission, prepared.contextVersion, nowISO(this.clock));
     return receipt;
   }
-  async reviseAnalysisFromSession({ sessionId, callId, actualCwd, assertWritable }, input) {
-    const binding = this.#binding(sessionId, actualCwd);
+  async reviseAnalysisFromSession({ sessionId, callId, actualCwd, assertWritable, runId: expectedRunId }, input) {
+    const binding = this.#binding(sessionId, actualCwd, expectedRunId);
     if (!analysisRoles.includes(binding.role)) throw new Error("此会话角色无权修订分析");
     const allowed = ["operationKey", "version", "contextVersion", "expectedAnalysisRevision", "analysis", "reason", "evidenceRefs"];
     if (!input || Object.keys(input).some(key => !allowed.includes(key))) throw new Error("分析修订参数无效");
@@ -472,11 +483,11 @@ class ConsoleService {
     assertWritable?.();
     const original = required(this.store.run(binding.runId), "运行记录"), source = required(this.store.source(original.sourceId), "来源");
     if (source.workspaceId !== binding.workspaceId) throw new Error("来源工作区已变化，请从当前内容新开会话");
-    const submission = { ...input, kind: "analysis-revision" }, replay = this.store.replaySubmission(binding.sessionId, submission);
+    const submission = { ...input, kind: "analysis-revision" }, replay = this.store.replaySubmission(binding.sessionId, submission,binding.runId);
     if (replay) return replay;
     const prepared = await this.#prepare(source);
     this.#assertWorkspaceSource(source);
-    if (input.version !== original.version || prepared.contextVersion !== original.contextVersion || input.contextVersion !== original.contextVersion) throw new Error("内容或来源资料已变化，请从当前内容新开分析会话");
+    if (input.version !== original.version || prepared.contextVersion !== original.contextVersion || input.contextVersion !== original.contextVersion) throw new Error("内容或来源资料已变化，请重新整理当前内容以启动新轮");
     const item = required(this.store.header(original.itemId), "内容项"), at = nowISO(this.clock);
     const run = { ...this.#runRecord(source, item, prepared, "analysis-revision"), baseAnalysisRevision: input.expectedAnalysisRevision, inputSnapshot: original.inputSnapshot, originSession: { sessionId: binding.sessionId, role: binding.role, workspaceId: binding.workspaceId, at }, revision: { originRunId: original.id, reason: input.reason, evidenceRefs: input.evidenceRefs ?? [] } };
     assertWritable?.();
@@ -570,8 +581,8 @@ class ConsoleService {
   endSession(sessionId) {
     this.store.endSession(String(sessionId));
   }
-  requireSubmission(sessionId) {
-    return required(this.store.receipt(String(sessionId)), "本阶段工具提交结果");
+  requireSubmission(sessionId, runId) {
+    return required(this.store.receipt(String(sessionId),runId), "本阶段工具提交结果");
   }
   async superviseDraft(id, { bodyHash } = {}) {
     return this.#job(`supervise:${id}`, async () => {
@@ -643,7 +654,7 @@ class ConsoleService {
   async close() {
     this.#closed = true;
     clearInterval(this.#timer);
-    for (const controller of this.#aborts) controller.abort();
+    for (const controller of this.#aborts) controller.abort({kind:'owner-disposed'});
     await Promise.allSettled(this.#jobs.values());
     await this.store.close();
   }

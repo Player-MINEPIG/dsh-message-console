@@ -59,7 +59,7 @@ test('web Release and fallback PR retain item IDs, versions, feedback, drafts an
   assert.equal(changed.readVersion,old.version);assert.equal(f.store.item(id,old.version).body,old.body);
   assert.equal(f.store.feedback(id).id,feedback.id);assert.equal(f.store.feedback(id).itemVersion,old.version);
   assert.equal(f.store.draft(receipt.draftId).body,'历史草稿');assert.equal(f.store.draft(receipt.draftId).status,'stale');
-  assert.deepEqual(f.service.runs(id,{}).items,originalRuns);assert.equal(f.store.sessionBinding(conversation.sessionId).itemId,id);
+  assert.deepEqual(f.service.runs(id,{}).items.map(({submission,...run})=>run),originalRuns.map(({submission,...run})=>run));assert.equal(f.service.runs(id,{}).items[0].submission.draftStatus,'stale');assert.equal(f.store.sessionBinding(conversation.sessionId).itemId,id);
   assert.equal(f.service.runs(`${f.source.id}:issue:3`,{}).total,0);
   assert.equal(f.store.item(`${f.source.id}:release:web-v1`).remoteId,'release:web-v1');
   await f.service.refresh(f.source.id,{organize:false});assert.equal(f.items().length,3);assert.equal(f.store.item(id).version,changed.version);assert.equal(f.store.versions(id,{}).total,2);

@@ -94,7 +94,7 @@ class Store {
       this.#db.function("dmc_lower", { deterministic: true }, (value) => String(value ?? "").toLowerCase());
       await chmod(filename, 384);
       const schemaVersion = this.#get("PRAGMA user_version").user_version;
-      if (![0, 2, 3, 4, 5].includes(schemaVersion)) throw new Error("不支持此数据库版本");
+      if (![0, 2, 3, 4, 5, 6].includes(schemaVersion)) throw new Error("不支持此数据库版本");
       this.#db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         INSERT OR IGNORE INTO meta VALUES('revision','0');
@@ -139,7 +139,13 @@ class Store {
         }
         if(schemaVersion===3)this.#run(`UPDATE item_versions SET metadata=CASE WHEN json_type(metadata,'$.video')='object' THEN json_set(metadata,'$.diffLength',coalesce(length(json_extract(payload,'$.diff')),0),'$.video.descriptionLength',coalesce(length(json_extract(payload,'$.video.description')),0)) ELSE json_set(metadata,'$.diffLength',coalesce(length(json_extract(payload,'$.diff')),0)) END`);
         for (const column of ["attention_version", "acknowledged_attention_version"]) if (!this.#all("PRAGMA table_info(items)").some(entry => entry.name === column)) this.#db.exec(`ALTER TABLE items ADD COLUMN ${column} INTEGER NOT NULL DEFAULT ${column === "attention_version" ? 1 : 0}`);
-        this.#db.exec("PRAGMA user_version=5");
+        this.#db.exec(`CREATE TABLE IF NOT EXISTS run_sessions(run_id TEXT NOT NULL REFERENCES runs(id),session_id TEXT NOT NULL,role TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(run_id,session_id,role));
+          CREATE INDEX IF NOT EXISTS run_session_identity ON run_sessions(session_id,run_id);
+          CREATE INDEX IF NOT EXISTS receipt_run ON receipts(json_extract(data,'$.runId'),session_id);
+          CREATE INDEX IF NOT EXISTS receipt_origin ON receipts(session_id,json_extract(data,'$.revision.originRunId'));
+          CREATE INDEX IF NOT EXISTS audit_receipt ON audit(json_extract(data,'$.receiptId'),event);
+          INSERT OR IGNORE INTO run_sessions SELECT run_id,session_id,role,data FROM sessions WHERE run_id IS NOT NULL;
+          PRAGMA user_version=6;`);
       });
       if (!this.#get("SELECT value FROM meta WHERE key='initialized'")) {
         let legacy;
@@ -201,7 +207,11 @@ class Store {
     const links = /* @__PURE__ */ new Map();
     for (const item of Object.values(state.items)) for (const link of item.sessions ?? []) links.set(link.sessionId, { ...link, itemId: item.id, sourceId: item.sourceId });
     for (const run of Object.values(state.runs)) for (const link of run.sessions ?? []) links.set(link.sessionId, { ...links.get(link.sessionId), ...link, runId: run.id, itemId: run.itemId, sourceId: state.items[run.itemId]?.sourceId });
-    for (const link of links.values()) this.#run("INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?,?,?)", link.sessionId, link.runId ?? null, link.itemId ?? null, link.sourceId ?? null, link.role ?? "human", link.workspaceId ?? null, null, json({ ...link, legacy: true }), state.runs[link.runId]?.status === "running" ? 0 : 1, this.#sessionSequence());
+    for (const link of links.values()) {
+      const data = json({ ...link, legacy: true });
+      this.#run("INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?,?,?)", link.sessionId, link.runId ?? null, link.itemId ?? null, link.sourceId ?? null, link.role ?? "human", link.workspaceId ?? null, null, data, state.runs[link.runId]?.status === "running" ? 0 : 1, this.#sessionSequence());
+      if (link.runId) this.#run("INSERT INTO run_sessions VALUES(?,?,?,?)",link.runId,link.sessionId,link.role ?? "human",data);
+    }
     for (const event of state.audit ?? []) this.#run("INSERT INTO audit VALUES(?,?,?,?)", event.id, event.at ?? null, event.event ?? null, json(event));
     for (const row of this.#all("SELECT id FROM items")) this.#project(row.id);
     this.#run("INSERT INTO meta VALUES('legacyHash',?)", createHash("sha256").update(raw).digest("hex"));
@@ -457,7 +467,7 @@ class Store {
     return { total, refs, excludedClosed: rows.length - refs.length, unanalysed: this.#get("SELECT count(*) n FROM items WHERE source_id=? AND analysis IS NULL", sourceId).n };
   }
   #writeRun(run) {
-    const { decision, sourceSnapshot, ...data } = run;
+    const { decision, sourceSnapshot, submission, ...data } = run;
     this.#run("INSERT INTO runs VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data,decision=coalesce(excluded.decision,runs.decision),source_snapshot=coalesce(excluded.source_snapshot,runs.source_snapshot)", run.id, run.itemId, run.status ?? "running", run.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(), json(data), decision ? json(decision) : null, sourceSnapshot ? json(sourceSnapshot) : null);
   }
   createRun(run) {
@@ -467,7 +477,7 @@ class Store {
     });
   }
   #runSessions(id, data) {
-    return [...(data.originSession ? [data.originSession] : []), ...this.#all("SELECT data FROM sessions WHERE run_id=? ORDER BY seq", id).map(row => parse(row.data))];
+    return [...(data.originSession ? [data.originSession] : []), ...this.#all("SELECT data FROM run_sessions WHERE run_id=? ORDER BY rowid",id).map(row => parse(row.data))];
   }
   run(id) {
     const row = this.#get("SELECT * FROM runs WHERE id=?", id);
@@ -483,7 +493,7 @@ class Store {
     required(this.#itemRow(id), "内容项");
     const from = `FROM (SELECT id,json_remove(data,'$.inputSnapshot','$.settingsSnapshot','$.result') data,decision IS NOT NULL hasDecision,started_at,0 legacy FROM runs WHERE item_id=? UNION ALL SELECT session_id id,data,0 hasDecision,coalesce(json_extract(data,'$.at'),'') started_at,1 legacy FROM sessions WHERE item_id=? AND run_id IS NULL)`;
     const page = this.#page(`SELECT count(*) n ${from}`, `SELECT * ${from} ORDER BY started_at DESC,id LIMIT ? OFFSET ?`, [id, id], input);
-    page.items = page.items.map((row) => row.legacy ? { id: `legacy-session:${row.id}`, legacy: true, kind: "legacy-session", status: "historical", startedAt: row.started_at, sessions: [parse(row.data)], hasDecision: false } : { ...parse(row.data), hasDecision: Boolean(row.hasDecision), sessions: this.#runSessions(row.id, parse(row.data)) });
+    page.items = page.items.map((row) => row.legacy ? { id: `legacy-session:${row.id}`, legacy: true, kind: "legacy-session", status: "historical", startedAt: row.started_at, sessions: [parse(row.data)], hasDecision: false } : { ...parse(row.data), hasDecision: Boolean(row.hasDecision), sessions: this.#runSessions(row.id, parse(row.data)), submission: this.runSubmission(row.id) });
     return page;
   }
   decision(id) {
@@ -514,18 +524,34 @@ class Store {
   updateDraft(id, change) {
     return this.#transaction(() => this.#updateDraft(id, change));
   }
-  bindSession(binding) {
+  bindSession(binding, { reuse = false } = {}) {
     return this.#transaction(() => {
       const run = required(this.run(binding.runId), "运行记录");
       const old = this.sessionBinding(binding.sessionId);
       if (old) {
-        if (old.runId !== binding.runId || old.role !== binding.role || old.cwd !== binding.cwd) throw new Error("会话绑定冲突");
-        return old;
+        if (old.runId === binding.runId && old.role === binding.role && old.cwd === binding.cwd) return old;
+        if (!reuse || !["writer","review","investigate"].includes(old.role) || old.role !== binding.role || old.itemId !== run.itemId || old.sourceId !== run.sourceId || old.workspaceId !== binding.workspaceId || old.cwd !== binding.cwd) throw new Error("会话绑定冲突");
       }
       const value = { ...binding, itemId: run.itemId, sourceId: run.sourceId, version: run.version, contextVersion: run.contextVersion, at: binding.at ?? (/* @__PURE__ */ new Date()).toISOString() };
-      this.#run("INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?,?,?)", binding.sessionId, binding.runId, run.itemId, run.sourceId, binding.role, binding.workspaceId, binding.cwd, json(value), binding.role === "human" ? 1 : 0, this.#sessionSequence());
+      this.#run("INSERT INTO run_sessions VALUES(?,?,?,?)", run.id, binding.sessionId, binding.role, json(value));
+      this.#run("INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET run_id=excluded.run_id,data=excluded.data,seq=excluded.seq", binding.sessionId, binding.runId, run.itemId, run.sourceId, binding.role, binding.workspaceId, binding.cwd, json(value), binding.role === "human" ? 1 : 0, this.#sessionSequence());
       return value;
     });
+  }
+  analysisSessions(runId, role) {
+    const run = required(this.run(runId), "运行记录");
+    return this.#all("SELECT s.data FROM sessions s JOIN run_sessions r ON r.session_id=s.session_id WHERE s.item_id=? AND s.source_id=? AND s.workspace_id=? AND s.role=? AND s.cwd IS NOT NULL AND coalesce(json_extract(s.data,'$.legacy'),0)=0 GROUP BY s.session_id ORDER BY min(r.rowid),s.session_id", run.itemId, run.sourceId, run.workspaceId, role).map(row => parse(row.data));
+  }
+  restoreSessionBinding(sessionId, runId, previous) {
+    return this.#transaction(() => {
+      if (this.sessionBinding(sessionId)?.runId !== runId || this.receipt(sessionId,runId)) throw new Error("会话轮次已变化，不能回滚");
+      this.#run("DELETE FROM run_sessions WHERE run_id=? AND session_id=?",runId,sessionId);
+      this.#run("UPDATE sessions SET run_id=?,data=?,seq=? WHERE session_id=?",previous.runId,json(previous),this.#sessionSequence(),sessionId);
+    });
+  }
+  assertSessionBinding(binding) {
+    const current = this.sessionBinding(binding.sessionId);
+    if (!current || current.runId !== binding.runId || current.role !== binding.role || current.contextVersion !== binding.contextVersion || current.version !== binding.version) throw new Error("会话分析轮次已变化，请重新读取当前轮次");
   }
   sessionBinding(id) {
     return parse(this.#get("SELECT data FROM sessions WHERE session_id=?", id)?.data);
@@ -538,7 +564,7 @@ class Store {
     return Number(this.#get("SELECT value FROM meta WHERE key='session_seq'").value);
   }
   #eligibleRun(runId) {
-    for (const row of this.#all("SELECT session_id FROM sessions WHERE run_id=?", runId)) this.#run("UPDATE sessions SET eligible=1,seq=? WHERE session_id=?", this.#sessionSequence(), row.session_id);
+    for (const row of this.#all("SELECT session_id FROM run_sessions WHERE run_id=?", runId)) this.#run("UPDATE sessions SET eligible=1,seq=? WHERE session_id=?", this.#sessionSequence(), row.session_id);
   }
   sessionDirectory({ after = 0, limit = 100 } = {}) {
     after = Number(after);
@@ -549,11 +575,20 @@ class Store {
     const next = chosen.at(-1)?.seq ?? after;
     return { changes: chosen.map((r) => ({ sessionId: r.session_id, eligible: Boolean(r.eligible) })), next, hasMore: Boolean(this.#get("SELECT 1 FROM sessions WHERE seq>? LIMIT 1", next)) };
   }
-  replaySubmission(sessionId, submission) {
-    const row = this.#get("SELECT request_hash,data FROM receipts WHERE session_id=? AND operation_key=?", sessionId, submission.operationKey);
-    if (!row) return null;
-    if (row.request_hash !== requestHash(submission)) throw new Error("相同操作键提交了不同内容");
-    return parse(row.data);
+  #operationKey(binding, submission) {
+    return ["writer","review","investigate"].includes(binding.role) ? JSON.stringify(["dmc-round-v1",binding.runId,submission.operationKey]) : submission.operationKey;
+  }
+  replaySubmission(sessionId, submission, runId = this.sessionBinding(sessionId)?.runId) {
+    const keys = runId ? [this.#operationKey({runId,role:"writer"},submission),submission.operationKey] : [submission.operationKey];
+    for (const key of keys) {
+      const row = this.#get("SELECT request_hash,data FROM receipts WHERE session_id=? AND operation_key=?",sessionId,key);
+      if (!row) continue;
+      const receipt = parse(row.data), origin = receipt.kind === "analysis-revision" ? receipt.revision?.originRunId : receipt.runId;
+      if (runId && origin !== runId) continue;
+      if (row.request_hash !== requestHash(submission)) throw new Error("相同操作键提交了不同内容");
+      return receipt;
+    }
+    return null;
   }
   endSession(sessionId) {
     return this.#transaction(() => {
@@ -561,8 +596,16 @@ class Store {
       if (row && !row.eligible) this.#run("UPDATE sessions SET eligible=1,seq=? WHERE session_id=?", this.#sessionSequence(), sessionId);
     });
   }
-  receipt(sessionId) {
-    return parse(this.#get("SELECT data FROM receipts WHERE session_id=? AND json_extract(data,'$.kind') IS NOT 'analysis-revision' ORDER BY rowid DESC LIMIT 1", sessionId)?.data);
+  receipt(sessionId, runId = this.sessionBinding(sessionId)?.runId) {
+    if (!runId) return null;
+    return parse(this.#get("SELECT data FROM receipts WHERE session_id=? AND json_extract(data,'$.runId')=? AND json_extract(data,'$.kind') IS NOT 'analysis-revision' ORDER BY rowid DESC LIMIT 1",sessionId,runId)?.data);
+  }
+  runSubmission(runId) {
+    const row = this.#get("SELECT data FROM receipts WHERE json_extract(data,'$.runId')=? AND json_extract(data,'$.kind') IN ('analysis','analysis-revision','draft') ORDER BY CASE json_extract(data,'$.kind') WHEN 'analysis' THEN 0 WHEN 'analysis-revision' THEN 0 ELSE 1 END,rowid DESC LIMIT 1",runId);
+    if (!row) return null;
+    const receipt = parse(row.data), saved = this.#get("SELECT at FROM audit WHERE json_extract(data,'$.receiptId')=? AND event IN ('tool.result.saved','tool.analysis.revised') ORDER BY at LIMIT 1",receipt.id);
+    const draft = receipt.draftId ? this.draft(receipt.draftId) : null;
+    return { id:receipt.id,kind:receipt.kind,adopted:receipt.adopted === true,at:saved?.at ?? null,sessionId:receipt.sessionId,...(draft ? {draftId:draft.id,draftStatus:draft.status} : {}) };
   }
   #audit(event, detail, at = (/* @__PURE__ */ new Date()).toISOString()) {
     const value = { id: randomUUID(), at, event, ...detail };
@@ -587,7 +630,7 @@ class Store {
   }
   submitWorkspaceDraft(run, binding, callId, submission, currentContext, at) {
     return this.#transaction(() => {
-      const replay = this.replaySubmission(binding.sessionId, submission);
+      const replay = this.replaySubmission(binding.sessionId, submission, binding.runId);
       if (replay) return replay;
       if (this.sessionBinding(binding.sessionId)) throw new Error("受管会话必须使用原角色绑定");
       const item = required(this.#itemRow(run.itemId), "内容项"), source = required(this.source(run.sourceId), "来源");
@@ -601,12 +644,13 @@ class Store {
   }
   reviseAnalysis(binding, callId, submission, run, at) {
     return this.#transaction(() => {
-      const replay = this.replaySubmission(binding.sessionId, submission);
+      this.assertSessionBinding(binding);
+      const replay = this.replaySubmission(binding.sessionId, submission, binding.runId);
       if (replay) return replay;
-      const original = required(this.run(binding.runId), "运行记录"), first = this.receipt(binding.sessionId);
+      const original = required(this.run(binding.runId), "运行记录"), first = this.receipt(binding.sessionId,binding.runId);
       if (!first || first.kind !== "analysis") throw new Error("本会话尚未提交分析，请先使用 dmc_submit_result");
       const item = required(this.#itemRow(original.itemId), "内容项"), source = required(this.source(original.sourceId), "来源");
-      if (item.version !== original.version || item.version !== submission.version || source.contextVersion !== original.sourceContextVersion || source.contextVersion !== run.sourceContextVersion || source.workspaceId !== binding.workspaceId || run.contextVersion !== original.contextVersion) throw new Error("内容或来源资料已变化，请从当前内容新开分析会话");
+      if (item.version !== original.version || item.version !== submission.version || source.contextVersion !== original.sourceContextVersion || source.contextVersion !== run.sourceContextVersion || source.workspaceId !== binding.workspaceId || run.contextVersion !== original.contextVersion) throw new Error("内容或来源资料已变化，请重新整理当前内容以启动新轮");
       if (!item.analysis || item.analysis_revision !== submission.expectedAnalysisRevision) throw new Error("分析已变化，请重新读取 analysis 后修订");
       const result = { ...submission.analysis, processing: "analysis" };
       const revision = { ...run.revision, originalReceiptId: first.id, previousAnalysisRevision: item.analysis_revision, previousAnalysis: parse(item.analysis) };
@@ -615,18 +659,16 @@ class Store {
       for (const id of invalidatedDraftIds) this.#updateDraft(id, { status: "stale" });
       this.#writeRun({ ...run, revision, result, resultAdopted: true, processing: "analysis", status: "completed", finishedAt: at });
       const receipt = { id: randomUUID(), sessionId: binding.sessionId, runId: run.id, kind: "analysis-revision", result, adopted: true, analysisRevision: item.analysis_revision + 1, revision, invalidatedDraftIds };
-      this.#run("INSERT INTO receipts VALUES(?,?,?,?,?)", receipt.id, binding.sessionId, submission.operationKey, requestHash(submission), json(receipt));
+      this.#run("INSERT INTO receipts VALUES(?,?,?,?,?)", receipt.id, binding.sessionId, this.#operationKey(binding,submission), requestHash(submission), json(receipt));
       this.#audit("tool.analysis.revised", { sessionId: binding.sessionId, callId, runId: run.id, receiptId: receipt.id, originRunId: original.id, analysisRevision: receipt.analysisRevision }, at);
       return receipt;
     });
   }
   #submit(binding, callId, submission, currentContext, at) {
-    const hash = requestHash(submission), existing = this.#get("SELECT request_hash,data FROM receipts WHERE session_id=? AND operation_key=?", binding.sessionId, submission.operationKey);
-    if (existing) {
-      if (existing.request_hash !== hash) throw new Error("相同操作键提交了不同内容");
-      return parse(existing.data);
-    }
-    if (binding.role !== "human" && this.receipt(binding.sessionId)) throw new Error("此阶段已有持久结果");
+    if (this.sessionBinding(binding.sessionId)) this.assertSessionBinding(binding);
+    const hash = requestHash(submission), replay = this.replaySubmission(binding.sessionId,submission,binding.runId);
+    if (replay) return replay;
+    if (binding.role !== "human" && this.receipt(binding.sessionId,binding.runId)) throw new Error("此阶段已有持久结果");
     const run = required(this.run(binding.runId), "运行记录"), item = required(this.#itemRow(run.itemId), "内容项"), source = required(this.source(run.sourceId), "来源");
     const fresh = item.version === run.version && currentContext === run.contextVersion && source.contextVersion === run.sourceContextVersion && source.workspaceId === binding.workspaceId;
     const receipt = { id: randomUUID(), sessionId: binding.sessionId, runId: run.id, kind: submission.kind, result: null };
@@ -657,7 +699,7 @@ class Store {
       receipt.draftId = receipt.draft.id;
       receipt.draft = { id: receipt.draft.id, body: receipt.draft.body, bodyHash: receipt.draft.bodyHash, status: receipt.draft.status };
     }
-    this.#run("INSERT INTO receipts VALUES(?,?,?,?,?)", receipt.id, binding.sessionId, submission.operationKey, hash, json(receipt));
+    this.#run("INSERT INTO receipts VALUES(?,?,?,?,?)", receipt.id, binding.sessionId, this.#operationKey(binding,submission), hash, json(receipt));
     this.#audit("tool.result.saved", { sessionId: binding.sessionId, callId, runId: run.id, receiptId: receipt.id, kind: submission.kind }, at);
     return receipt;
   }

@@ -5,16 +5,16 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { resolve } from 'node:path';
 import { createDshExecutor, sessionFailure } from '../src/dsh.js';
 
-function fixture({ noSubmission = false, failFinalFlush = false, unavailable = false, failAttach = false, storageDirectory = resolve('.local') } = {}) {
-  const created = [], snapshots = [], inputs = [], attached = [], bindings = new Map(); let flushes = 0, disposed = 0;
+function fixture({ noSubmission = false, failFinalFlush = false, unavailable = false, failAttach = false, storageDirectory = resolve('.local'), discardInput = false, afterFollowup }  = {}) {
+  const created = [], snapshots = [], inputs = [], attached = [], cancellations = [], bindings = new Map(); let flushes = 0, disposed = 0;
   const ctx = {
     workspaceRegistry: { list:()=>[], get:id=>id==='ws-1'?{path:'/tmp',status:async()=>unavailable?'missing-dir':'ok',attachSession:async id=>{assert.ok(flushes>0);if(failAttach)throw new Error('attach failed');attached.push(id);}}:undefined },
     agents: { async create(options) {
       created.push(options);
       const session = Session.create(options.sessionId);
-      let events = [];
-      const agent = { session, inbox:{nextStep:[]}, inject(message){this.send(message,'next-step',false);}, send(message,target,wakeup){assert.equal(wakeup,false);this.inbox.nextStep.push(message);session.append('agent/inbox/spliced',{target,start:0,inserted:[message]});}, cancel() {}, followup(message) { assert.ok(attached.includes(String(session.id))); inputs.push(message); }, async whenIdle() {
-        events = [{ type:'assistant/message', data:{turn:1,message:{content:[{type:'text',text:'最终文字不作为业务结果'}]}} }, {type:'turn/end',data:{turn:1,reason:{kind:'completed'}}}];
+      let events = [];const hooks=new Map();const emit=(name,...args)=>{for(const fn of hooks.get(name)??[])fn(...args);};
+      const agent = { ctx:{on(name,fn){if(!hooks.has(name))hooks.set(name,new Set());hooks.get(name).add(fn);return ()=>hooks.get(name).delete(fn);}},session, inbox:{nextStep:[]}, inject(message){this.send(message,'next-step',false);}, send(message,target,wakeup){assert.equal(wakeup,false);this.inbox.nextStep.push(message);session.append('agent/inbox/spliced',{target,start:0,inserted:[message]});}, cancel(cause) {cancellations.push(cause);}, followup(message) { assert.ok(attached.includes(String(session.id))); inputs.push(message);if(discardInput)emit('agent/inbox/discarded',{message});else emit('agent/inbox/claimed',{message,turn:1});afterFollowup?.(); }, async whenIdle() {
+        events = [{ type:'assistant/message', data:{turn:1,message:{content:[{type:'text',text:'最终文字不作为业务结果'}]}} }, {type:'turn/end',data:{turn:1,reason:{kind:'completed'}}}];emit('session/event',session,events.at(-1));
       } };
       // Only model execution uses a synthetic turn; background uses real Session validation.
       const originalSnapshot = session.snapshotEvents.bind(session);
@@ -29,7 +29,7 @@ function fixture({ noSubmission = false, failFinalFlush = false, unavailable = f
     dshPromptAssembler: { store: { applySnapshot() {} } },
   };
   const service={storageDirectory:()=>storageDirectory,bindSession(binding){bindings.set(binding.sessionId,binding);},endSession(){},requireSubmission(sessionId){if(noSubmission)throw new Error('本轮没有通过工具保存结果');return {id:'receipt',sessionId,runId:'run-1',kind:'analysis',result:{ok:true}};}};
-  return { executor:createDshExecutor(ctx,{createUserMessage,SessionId,service}),created,snapshots,inputs,attached,get disposed(){return disposed;} };
+  return { executor:createDshExecutor(ctx,{createUserMessage,SessionId,service}),created,snapshots,inputs,attached,cancellations,get disposed(){return disposed;} };
 }
 test('human background is valid durable pending input without waking a model',async()=>{
   const f=fixture(); const id=await f.executor.conversation({item:{title:'Question',body:'original context'},source:{workspaceId:'ws-1',name:'source'},settings:{writerProvider:'p',writerModel:'m'}});
@@ -77,3 +77,11 @@ test('session termination preserves the real provider failure and identity witho
 });
 
 test('unsafe temporary storage stops before session creation',async()=>{const f=fixture({storageDirectory:'/tmp'});await assert.rejects(f.executor.runAgent({workspaceId:'ws-1',runId:'run',role:'writer',input:{},instructions:'save',provider:'p',model:'m',title:'unsafe'}),/存储目录位于 Agent 可写范围/);assert.equal(f.created.length,0);});
+
+test('discarded unclaimed stage input settles as missing turn without borrowing another turn success',async()=>{
+ const f=fixture({discardInput:true});await assert.rejects(f.executor.runAgent({runId:'discarded',workspaceId:'ws-1',role:'writer',input:{},instructions:'save',provider:'p',model:'m',title:'discard'}),error=>error.sessionFailure?.code==='MISSING_TURN_END');assert.equal(f.cancellations.length,0);
+});
+test('signal already aborted during enqueue is observed when the listener is installed',async()=>{
+ const controller=new AbortController(),f=fixture({afterFollowup:()=>controller.abort(new Error('synthetic owner stop'))});
+ await assert.rejects(f.executor.runAgent({runId:'cancelled',workspaceId:'ws-1',role:'writer',input:{},instructions:'save',provider:'p',model:'m',title:'cancel',signal:controller.signal}),/synthetic owner stop/);assert.equal(f.cancellations[0].reason,'message-console signal cancelled');
+});

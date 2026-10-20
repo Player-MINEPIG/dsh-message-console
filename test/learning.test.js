@@ -193,7 +193,7 @@ test('schema four upgrade adds learning tables and attention columns without rew
   db.close(); await f.store.start(); await f.store.close();
   db = new DatabaseSync(join(f.directory, 'console.sqlite'));
   const after = db.prepare('SELECT * FROM items').all().map(({ attention_version, acknowledged_attention_version, ...row }) => row);
-  assert.deepEqual(after, before); assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.deepEqual(after, before); assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
   db.close(); await f.store.start(); assert.equal(f.store.header(item.id).title, '问题0');
 });
 

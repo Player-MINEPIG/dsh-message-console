@@ -17,13 +17,13 @@ DSH Web slots / uiWorkspace
 
 平台声明能力；来源保存目标、类型和覆盖配置；内容项保存稳定远端 ID、当前版本、阅读版本、处理状态与会话关联。抓取更新内容版本。首次完整抓取建立已读基线并令 `analyzedVersion` 等于当前版本，以跳过自动分析；此时 `analysis` 仍为空，不代表实际执行过模型。
 
-`src/core.js` 不依赖 DSH。`src/dsh.js` 将工作角色映射到独立原生会话，保存会话引用后才执行；人工背景通过公开 `Agent.inject` 准备为待用输入，首次用户发言后才由宿主写入真实消息，不伪造系统头、模型输出或工具记录。每个版本的人工入口可新建会话，旧会话仍可查看。
+`src/core.js` 不依赖 DSH。`src/dsh.js` 将不同工作角色映射到独立原生会话，同内容分析角色可跨轮复用原生历史，保存会话引用后才执行；人工背景通过公开 `Agent.inject` 准备为待用输入，首次用户发言后才由宿主写入真实消息，不伪造系统头、模型输出或工具记录。每个版本的人工入口可新建会话，旧会话仍可查看。
 
 ## 宿主兼容边界
 
 当前目标为 DSH `0.2.1-rc.2`、Cordis `4.0.5`，Assembler 标准 native 后端固定到 `1.1.2` 源码提交 `21183e18c9e8e7f7f01fda04b5af4218ce194539` 及锁文件完整性摘要。该补丁对装配、历史策略与 request-token API 显式要求 DSH owner 认证，保留 Host、Origin、JSON 和桌面 CSRF token 检查。包的 `engines.dsh`、DSH peer 和锁文件共同声明这一组合，不承诺旧宿主继续兼容。插件将旧 JSON 业务数据迁移到 SQLite，DSH 原生会话历史仍由宿主保存，不迁移或重写真实会话事件，也不修改宿主核心。
 
-新版宿主将工作目录等动态事实放在 runtime context。Assembler 兼容层保留旧文本策略的 `cwd` 变量，并保留宿主必需上下文；插件自身仍通过公开 `agents.create`、`followup`、`whenIdle`、`sessions.flush` 和 `inject` 驱动独立角色。尾部 PHI 使用真实 user/pre-step 消息。JSONL 持久化插件的新版入口是命名 `apply`，离线集成测试按模块加载，不再假定 default 导出。
+新版宿主将工作目录等动态事实放在 runtime context。Assembler 兼容层保留旧文本策略的 `cwd` 变量，并保留宿主必需上下文；插件自身仍通过公开 `agents.create`、`followup`、`runMaintenance`、`session/event`、`whenIdle`、`sessions.flush` 和 `inject` 驱动独立角色。尾部 PHI 使用真实 user/pre-step 消息。JSONL 持久化插件的新版入口是命名 `apply`，离线集成测试按模块加载，不再假定 default 导出。
 
 模型目录继续使用 `llm.listProviders()` 和异步 `listModels(provider)`，只返回 provider/id/name。Jev 使用独立的 `decisionModels.config()` 白名单投影及 `ask()`；不因目录探测读取或返回密钥。第三方提供商的 peer/宿主兼容性由其自身声明，不能通过本插件的目录适配绕过。
 
@@ -237,7 +237,7 @@ dmc_read_item({ itemId, version, section: 'body', offset: 0, length: 16000 })
 
 分析修订后，该项 pending-supervision/ready/blocked 草稿标为 stale；发送中、结果未知和已发送的记录不改写。修订工具不接收 draftBody，不授予发布权限。用户评价冻结新的分析快照并指向修订 run；原 Jev 决策保留在原 run，不复制为一次新决策。无需数据库 schema 升级。任务完成后的自动通知与会话唤醒不属于该工具的职责。
 
-DSH 运行器等待 idle、flush 后，通过 `requireSubmission(sessionId)` 读取已保存的收据。缺少收据时明确失败，不解析最终助手 JSON 兜底。Jev 调用和上下文不足等系统分流仍由系统保存，保留真实输入、输出和错误，不伪造 Agent 工具调用。提交成功后的会话失败不删除已落稿，也不把失败会话记成成功。
+DSH 运行器等待该真实消息所属 session/turn 的 `turn/end` 并 flush 后，通过 `requireSubmission(sessionId, runId)` 读取本轮已保存的收据。缺少收据时明确失败，不解析最终助手 JSON 兜底。Jev 调用和上下文不足等系统分流仍由系统保存，保留真实输入、输出和错误，不伪造 Agent 工具调用。提交成功后的会话失败不删除已落稿，也不把失败会话记成成功。
 
 ## 按行存储与迁移
 
@@ -276,3 +276,15 @@ DSH 运行器等待 idle、flush 后，通过 `requireSubmission(sessionId)` 读
 `useRemoteResource` 用 generation 与单次请求序号拒绝迟到响应。改变搜索、筛选或页长回到第 1 页，详情选中项独立于列表及轮询。B站详情头只带视频标题和简介长度，视频简介按精确版本逐块读取。正文逐块加载，并明确显示剩余原文；版本、评论、工作记录和草稿各自分页。来源编辑预览也从服务端搜索候选，不从总览读取全部内容。工作区目录只在编辑或展开来源详情时按需读取，不参加五秒轮询。请求错误在对应区域显示，失败不伪装为空列表。
 
 新 run 保存来源快照、初始设置、内容版本，以及本次观察的 changedAt 和 previous 原文引用。内容 hash 再次出现时，当前观察的 previous 可能不同于该 hash 首次出现时的 previous；人工背景恢复和监督重试使用 run 冻结的信息，不随后续抓取漂移。
+
+## 分析会话与处理轮（schema 6）
+
+`writer/review/investigate` 按 item、source、role、workspace 和 canonical cwd 选择最早有效的原会话。真实会话不存在才继续下一候选或创建；权限、持久化或损坏错误直接失败。忙或存在 inbox 的原会话不切绑定，避免改变用户正在进行的工作。监督、学习及人工会话不进入此候选集合。
+
+`sessions` 是当前绑定指针；新增 `run_sessions(run_id,session_id,role,data)` 保存不可变的逐轮历史关联。schema 5 升级在事务中复制全部 run_id 非空绑定，包括 legacy 历史；legacy 不参与复用。旧 run、receipt 和 native 事件保留。原会话在 `runMaintenance` claim 的真正 idle 阶段同步切换绑定、请求装配并加入带 runId 的真实新输入；失败恢复旧绑定和装配。新输入附当前分析及历史引用，不伪合并其他会话事件。
+
+每轮首收据按 sessionId/runId 查询。内部 JSON 元组幂等键包含 runId，公开 operationKey 不变；旧原始键只在 receipt.runId 或 revision.originRunId 匹配本轮时回放。工具捕获轮次，跨 await 后及写事务前检查当前绑定，原内容/资料/分析 CAS 与写入权限检查继续生效。
+
+`agent/inbox/claimed` 将真实消息关联到 turn，路由钩子按 turn 采用本轮模型，后续用户轮恢复原路由。`session/event` 只结算该 session/turn 的 turn/end；discard 与宿主 idle 提供未接受消息/异常缺日志的失败兜底。计时器只取消仍执行的目标轮，不影响后续用户轮。超时保留 TIMEOUT、时限和真实 hook 原因，外部信号及宿主取消另记。
+
+工作列表的 submission 是 indexed receipt/audit 只读投影，优先正式分析，不被同 run 的监督收据覆盖。原 failed/interrupted 和 finishedAt 不因后补交而改成 completed；结果保存时间、当时采纳与草稿当前监督状态独立展示。同步草稿监督仍沿原 executor 路径。

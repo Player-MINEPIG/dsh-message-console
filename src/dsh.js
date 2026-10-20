@@ -2,6 +2,7 @@ import { createModelCatalog } from './model-catalog.js';
 import { assembleInput, serializeInput } from './input-assembly.js';
 import { postHistoryText, learningGuidanceText } from './source-context.js';
 import { randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
 import { WorkflowExecutor } from './executor.js';
 import { queueConversationBackground, assertStorageOutsideWorkspace } from './agent-tools.js';
 
@@ -30,12 +31,15 @@ export function createDshWorkspaces(ctx) {
   };
 }
 
-export function sessionFailure(reason, sessionId) {
+export function sessionFailure(reason, sessionId, timing = {}) {
   const failure = reason?.error ?? {};
-  const code = typeof failure.code === 'string' ? failure.code : (reason?.kind ?? 'missing-turn-end').toUpperCase().replaceAll('-', '_');
+  const cause = reason?.kind === 'aborted' ? reason.reason : undefined;
+  const timeout = cause?.kind === 'hook' && /^message-console timeout after \d+ms$/.test(cause.reason ?? '');
+  const cancellation = timeout ? 'timeout' : cause?.kind === 'hook' ? cause.reason === 'message-console owner disposed' ? 'owner' : cause.reason === 'message-console signal cancelled' ? 'signal' : 'hook' : cause?.kind;
+  const code = timeout ? 'TIMEOUT' : typeof failure.code === 'string' ? failure.code : (reason?.kind ?? 'missing-turn-end').toUpperCase().replaceAll('-', '_');
   const messages = { aborted: '会话已中断', 'max-tokens': '输出达到长度上限', completed: '会话完成但未取得预期结果' };
-  const message = typeof failure.message === 'string' ? failure.message : messages[reason?.kind] ?? '未记录本轮完整的 turn/end，请查看真实会话历史';
-  const detail = { sessionId, kind: reason?.kind ?? 'missing-turn-end', code, message, ...(Number.isInteger(failure.status) ? { status: failure.status } : {}) };
+  const message = timeout ? `本阶段执行超过 ${timing.timeoutMs ?? '配置的'} 毫秒` : typeof failure.message === 'string' ? failure.message : messages[reason?.kind] ?? '未记录本轮完整的 turn/end，请查看真实会话历史';
+  const detail = { ...(cancellation ? {cancellationSource:cancellation,cancelCause:cause,...timing} : {}), sessionId, kind: reason?.kind ?? 'missing-turn-end', code, message, ...(Number.isInteger(failure.status) ? { status: failure.status } : {}) };
   const error = new Error(`DSH 调用失败 [${code}]${detail.status ? ` HTTP ${detail.status}` : ''}：${message}（会话 ${sessionId}）`);
   error.sessionFailure = detail;
   return error;
@@ -64,30 +68,117 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
       return { handle, sessionId: String(sessionId) };
     } catch (error) { await handle.dispose(); throw error; }
   }
+  const routes = new WeakMap();
+  function roundRoute(agent, messageId, provider, model) {
+    let state = routes.get(agent);
+    const previous = state ? {...state} : null;
+    if (!state) {
+      const header = agent.session.requestHeader();
+      state = {original:header?.config ?? agent.options};
+      state.claimStop = agent.ctx.on('agent/inbox/claimed',({message,turn}) => { if (message.id === state.messageId) state.turn = turn; });
+      state.stop = agent.ctx.on('agent/request',async (request,next) => {
+        const config = await next();
+        const active = state.active && request.turn === state.turn;
+        if (!active) { state.stop(); state.claimStop(); routes.delete(agent); }
+        if (!active && (config.provider !== state.provider || config.model !== state.model)) return config;
+        const route = active ? state : state.original;
+        const {provider:oldProvider,model:oldModel,reasoningEffort,...other} = config;
+        return {...other,...(route.reasoningEffort !== undefined ? {reasoningEffort:route.reasoningEffort} : {}),provider:route.provider,model:route.model};
+      });
+      routes.set(agent,state);
+    }
+    Object.assign(state,{active:true,messageId,turn:undefined,provider,model});
+    return (rollback=false) => {
+      state.active = false;
+      if (rollback) {
+        if (previous) Object.assign(state,previous);
+        else { state.stop(); state.claimStop(); routes.delete(agent); }
+      }
+    };
+  }
+  async function existingAnalysis({runId,role,workspaceId,provider,model}) {
+    if (!['writer','review','investigate'].includes(role) || !domain().analysisSessions) return null;
+    const workspace = await workspaces.resolve(workspaceId), cwd = await realpath(workspace.path);
+    await assertStorageOutsideWorkspace(domain().storageDirectory(),workspace.path);
+    for (const binding of domain().analysisSessions(runId,role)) {
+      let storedCwd;
+      try { storedCwd = await realpath(binding.cwd); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+      if (storedCwd !== cwd) continue;
+      const id = SessionId(binding.sessionId);
+      let agent = ctx.agents.get(id), handle;
+      if (!agent) {
+        const stored = await ctx.sessionPersistence.stat(id);
+        if (!stored) continue;
+        if (!stored.header.cwd || await realpath(stored.header.cwd) !== cwd) throw new Error('原分析会话工作区与持久绑定不匹配');
+        handle = await ctx.agents.resume({resumeSessionId:id,agentOptions:{provider,model},async setup(agentCtx,resumed) {
+          await ctx.agentPresets.mount(agentCtx,resumed.session.header.agentPreset ?? 'ptc');
+        }});
+        agent = handle.agent;
+      }
+      if (await realpath(agent.session.header.cwd) !== cwd) { await handle?.dispose(); throw new Error('原分析会话工作区已变化'); }
+      return {agent,handle,sessionId:binding.sessionId,previous:binding};
+    }
+    return null;
+  }
   async function runAgent({ role, input, instructions, provider, model, signal, onSession, title, workspaceId, postHistoryInstruction, runId, batchId, draftId }) {
     signal?.throwIfAborted();
-    const { handle, sessionId } = await create({ provider, model, instructions, title, onSession, workspaceId, postHistoryInstruction, runId, batchId, role, draftId });
-    const agent = handle.agent;
-    const cancel = () => agent.cancel({ kind: 'hook', reason: 'message-console cancelled' });
-    const timer = setTimeout(cancel, timeoutMs); timer.unref?.();
-    signal?.addEventListener('abort', cancel, { once: true });
+    const reused = await existingAnalysis({runId,role,workspaceId,provider,model});
+    const created = reused ?? await create({ provider, model, instructions, title, onSession, workspaceId, postHistoryInstruction, runId, batchId, role, draftId });
+    const agent = reused?.agent ?? created.handle.agent, sessionId = created.sessionId;
+    let routeStop, timer, startedAt;
+    const cancelSignal = () => {
+      if (turnEnded) return;
+      if (ownedTurn === undefined) agent.inbox.remove(message.id);
+      else agent.cancel({kind:'hook',reason:signal?.reason?.kind === 'owner-disposed' ? 'message-console owner disposed' : 'message-console signal cancelled'},{keepInbox:true});
+    };
+    const message = createUserMessage({source:{kind:'dsh-message-console',form:'instructions',...(runId ? {runId} : {})},content:[{type:'text',text:serializeInput({role,input,...(['writer','review','investigate'].includes(role) && domain().analysisRoundContext ? {round:domain().analysisRoundContext(runId)} : {})})}]});
+    let ownedTurn, turnEnded = false, resolveEnd;
+    const turnEnd = new Promise(resolve => { resolveEnd = resolve; });
+    const stopEvent = agent.ctx.on('session/event',(_session,event)=>{
+      if (String(_session.id) === sessionId && event.type === 'turn/end' && event.data.turn === ownedTurn) { turnEnded = true; clearTimeout(timer); routeStop?.(); resolveEnd(event); }
+    });
+    const stopDiscard = agent.ctx.on('agent/inbox/discarded',({message:discarded})=>{ if (discarded.id === message.id && ownedTurn === undefined) { turnEnded = true; clearTimeout(timer); resolveEnd(null); } });
+    const stopClaim = agent.ctx.on('agent/inbox/claimed',({message:claimed,turn})=>{ if (claimed.id === message.id) ownedTurn = turn; });
     try {
       signal?.throwIfAborted();
-      const before = agent.session.snapshotEvents().length;
-      agent.followup(createUserMessage({ source: { kind: 'dsh-message-console', form: 'instructions' }, content: [{ type: 'text', text: serializeInput({ role, input }) }] }));
+      if (reused) {
+        await workspaces.attach(workspaceId,SessionId(sessionId));
+        await onSession?.(sessionId);
+        await agent.runMaintenance(async maintenance => {
+          maintenance.throwIfAborted(); signal?.throwIfAborted();
+          if (agent.inbox.nextTurn.length || agent.inbox.nextStep.length) throw new Error('原分析会话有待处理消息，请稍后重试');
+          const previousAssembly = ctx.dshPromptAssembler.store.selection(sessionId);
+          let switched = false;
+          try {
+            domain().bindSession({sessionId,runId,role,workspaceId,cwd:reused.previous.cwd},{reuse:true}); switched = true;
+            ctx.dshPromptAssembler.store.applySnapshot(sessionId,stagePreset(instructions,postHistoryInstruction));
+            routeStop = roundRoute(agent,message.id,provider,model);
+            agent.followup(message);
+            await ctx.sessions.flush(agent.session);
+            maintenance.throwIfAborted(); signal?.throwIfAborted();
+          } catch (error) {
+            const queued = [...agent.inbox.nextTurn,...agent.inbox.nextStep].find(entry=>entry.id===message.id);
+            if (queued) agent.inbox.remove(message.id);
+            routeStop?.(true); routeStop = undefined;
+            try { ctx.dshPromptAssembler.store.applySnapshot(sessionId,previousAssembly ?? null); }
+            finally { if (switched) domain().restoreSessionBinding(sessionId,runId,reused.previous); }
+            throw error;
+          }
+        });
+      } else agent.followup(message);
+      startedAt = Date.now();
+      timer = setTimeout(()=>!turnEnded && ownedTurn !== undefined && agent.cancel({kind:'hook',reason:`message-console timeout after ${timeoutMs}ms`},{keepInbox:true}),timeoutMs); timer.unref?.();
+      signal?.addEventListener('abort',cancelSignal,{once:true});
+      if (signal?.aborted) cancelSignal();
       await ctx.sessions.flush(agent.session);
-      await agent.whenIdle();
+      const end = await Promise.race([turnEnd,agent.whenIdle().then(()=>agent.session.snapshotEvents().findLast(event=>event.type==='turn/end' && event.data.turn===ownedTurn))]);
       await ctx.sessions.flush(agent.session);
       signal?.throwIfAborted();
-      const events = agent.session.snapshotEvents().slice(before);
-      const end = events.findLast(event => event.type === 'turn/end');
-      if (end?.data.reason.kind !== 'completed') throw sessionFailure(end?.data.reason, sessionId);
-      return role === 'learning' ? domain().requireLearningSubmission(sessionId) : domain().requireSubmission(sessionId);
+      if (end?.data.reason.kind !== 'completed') throw sessionFailure(end?.data.reason,sessionId,{timeoutMs,elapsedMs:Date.now()-startedAt});
+      return role === 'learning' ? domain().requireLearningSubmission(sessionId) : domain().requireSubmission(sessionId,runId);
     } finally {
-      clearTimeout(timer); signal?.removeEventListener('abort', cancel);
-      try { await ctx.sessions.flush(agent.session); } finally {
-        domain().endSession(sessionId);
-      }
+      clearTimeout(timer); stopEvent(); stopDiscard(); stopClaim(); routeStop?.(); signal?.removeEventListener('abort',cancelSignal);
+      try { await ctx.sessions.flush(agent.session); } finally { domain().endSession(sessionId); }
     }
   }
   async function conversation({ item, source, settings, runId }) {
