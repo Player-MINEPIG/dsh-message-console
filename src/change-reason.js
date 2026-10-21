@@ -13,12 +13,14 @@ export function reasonText(reason) {
   if (reason.kind === 'unknown') return '旧记录缺少可核对的版本，无法还原触发原因';
   if (reason.kind === 'same-version') return '同版本再次整理；旧记录未保存具体原因';
   const parts = [];
-  if (reason.rootChanged) parts.push(reason.itemKind === 'comment' ? '根评论内容变化' : '标题或正文变化');
+  if (reason.rootImagesChanged) parts.push('根评论图片变化');
+  if ((reason.rootTextChanged || reason.rootChanged && !reason.rootImagesChanged)) parts.push(reason.itemKind === 'comment' ? '根评论内容变化' : '标题或正文变化');
   if (reason.contextChanged) parts.push('讨论背景或平台信息变化');
   const label = reason.itemKind === 'comment' ? '楼中楼' : '讨论评论';
   if (reason.comments?.added) parts.push(`${label}新增 ${reason.comments.added} 条`);
   if (reason.comments?.edited) parts.push(`${label}修改 ${reason.comments.edited} 条`);
   if (reason.comments?.removed) parts.push(`${label}不再可见 ${reason.comments.removed} 条`);
+  if (reason.comments?.imageChanges) parts.push(`${label}图片变化涉及 ${reason.comments.imageChanges} 条`);
   if (!parts.length) parts.push('采集内容版本变化');
   return retry + parts.join('；');
 }

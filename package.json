@@ -1,6 +1,6 @@
 {
   "name": "dsh-message-console",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "看点什么 — a personal source and message console for DeepSeek Harness",
   "type": "module",
   "license": "MIT",
@@ -38,7 +38,8 @@
   },
   "dependencies": {
     "cheerio": "^1.1.2",
-    "dsh-prompt-assembler": "https://codeload.github.com/Player-MINEPIG/dsh-prompt-assembler/tar.gz/21183e18c9e8e7f7f01fda04b5af4218ce194539"
+    "dsh-prompt-assembler": "https://codeload.github.com/Player-MINEPIG/dsh-prompt-assembler/tar.gz/21183e18c9e8e7f7f01fda04b5af4218ce194539",
+    "sharp": "0.35.5"
   },
   "devDependencies": {
     "dsh-jev-plugin": "https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/2ec0510ffcdabe790df8c93b0b40aee07b93c342",

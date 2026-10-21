@@ -6,8 +6,8 @@ import { build } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 const directory=await mkdtemp(join(process.cwd(),'.local/ui-test-'));
-await build({stdin:{contents:"export {WorkRecord} from './src/work-records.jsx'; export {Dashboard,SourcePage,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination,SettingFields} from './src/ui-shared.jsx'; export {ConsoleApp,VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
-const {WorkRecord,Dashboard,SourcePage,ItemCard,ReadAllControl,ListPagination,SettingFields,ConsoleApp,VideoContext,FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory}=await import(join(directory,'ui.mjs'));
+await build({stdin:{contents:"export {ImageGallery,ImageCachePanel} from './src/images-view.jsx'; export {WorkRecord} from './src/work-records.jsx'; export {Dashboard,SourcePage,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination,SettingFields} from './src/ui-shared.jsx'; export {ConsoleApp,VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
+const {ImageGallery,ImageCachePanel,WorkRecord,Dashboard,SourcePage,ItemCard,ReadAllControl,ListPagination,SettingFields,ConsoleApp,VideoContext,FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory}=await import(join(directory,'ui.mjs'));
 test.after(()=>rm(directory,{recursive:true,force:true}));
 const render=(Component,props)=>renderToStaticMarkup(React.createElement(Component,props));
 test('overview renders server summaries without any item or draft collection',()=>{
@@ -155,4 +155,13 @@ test('work record shows frozen cause and historical reply excerpt without invent
   assert.match(html,/定时触发/);assert.match(html,/触发原因：楼中楼不再可见 1 条/);assert.match(html,/旧楼中楼/);
   const unknown=render(WorkRecord,{run:{...base,triggerReason:{kind:'unknown'}},item:{kind:'comment'},openSession(){}});
   assert.match(unknown,/无法还原触发原因/);assert.doesNotMatch(unknown,/楼中楼不再可见/);
+});
+
+test('comment images use private lazy previews and explicit unread labels without external image URLs or nested card buttons',()=>{
+ const images=[{url:'https://i0.hdslb.com/bfs/new_dyn/example.png'}];
+ const gallery=render(ImageGallery,{itemId:'s:i',version:'v1',images});assert.match(gallery,/图片 1 张 · 模型尚未读取图片/);assert.match(gallery,/查看第 1 张原图/);assert.match(gallery,/\[图片\]/);assert.doesNotMatch(gallery,/src="https:/);
+ const card=render(ItemCard,{item:{id:'i',kind:'comment',title:'图片评论',status:'read',version:'v1',payload:{images}},onSelect(){}});
+ assert.match(card,/模型尚未读取图片/);assert.doesNotMatch(card,/查看第 1 张原图/);
+ assert.equal([...card.matchAll(/<button/g)].length,1,'image previews do not nest interactive buttons inside card button');
+ const panel=render(ImageCachePanel,{});assert.match(panel,/清空图片缓存/);assert.match(panel,/<button type="button"/);assert.match(panel,/保留评论、图片链接和分析结果/);
 });

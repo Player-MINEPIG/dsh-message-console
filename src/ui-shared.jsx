@@ -7,8 +7,9 @@ export const time = value => value ? new Date(value).toLocaleString('zh-CN', { m
 export const safeURL = value => { try { const url = new URL(value); return ['https:','http:'].includes(url.protocol) ? url.href : undefined; } catch { return undefined; } };
 export { request } from './api.js';
 
-const settingNames = { includeClosed: '整理已关闭或已合并内容', fetchHours: '抓取间隔（小时）', organizeHours: '整理间隔（小时）', language: '摘要语言', decisionProfile: 'Jev 决策 profile', decisionConfidence: '决策概率阈值', decisionMargin: '决策概率差阈值', writerProvider: '生成 / 分析提供商', writerModel: '生成 / 分析模型', supervisorProvider: '监督提供商', supervisorModel: '监督模型', replyStyle: '回复风格', reviewFocus: 'PR 审查重点', learningGuidance: '全局学习指导' };
+const settingNames = { imageCacheMaxMB: '图片缓存总上限（MiB）', imageOriginalDays: '原图未使用保留天数', imageThumbnailDays: '缩略图未使用保留天数', imageCacheReserveMB: '磁盘预留空间（MiB）', includeClosed: '整理已关闭或已合并内容', fetchHours: '抓取间隔（小时）', organizeHours: '整理间隔（小时）', language: '摘要语言', decisionProfile: 'Jev 决策 profile', decisionConfidence: '决策概率阈值', decisionMargin: '决策概率差阈值', writerProvider: '生成 / 分析提供商', writerModel: '生成 / 分析模型', supervisorProvider: '监督提供商', supervisorModel: '监督模型', replyStyle: '回复风格', reviewFocus: 'PR 审查重点', learningGuidance: '全局学习指导' };
 const settingGroups = [
+  { title: '图片缓存容量与保留期限', keys: ['imageCacheMaxMB','imageOriginalDays','imageThumbnailDays','imageCacheReserveMB'], hint: '全局共享预算，临时下载也计入上限。低于磁盘预留空间时停止新增缓存；图片链接随评论历史保留。' },
   { title: 'GitHub 整理范围', keys: ['includeClosed'], hint: '始终采集全部状态。默认仅整理开放的 Issue 和 PR，Release 照常整理。开启后手动和自动整理也包含已关闭或已合并内容。' },
   { title: '抓取与整理频率', keys: ['fetchHours','organizeHours'], hint: '自动整理只处理新变化和需要更新的既有分析。手动整理已有数据也包含尚未分析的历史基线。' },
   { title: 'Jev · 轻量决策', keys: ['decisionProfile','decisionConfidence','decisionMargin'], hint: '评论先由 Jev 输出忽略、拟稿、人工介入的选项概率。普通模型的概率为自报估计，未经校准，阈值需用实际样本验证。选择默认项时使用 Jev 的默认 profile。此路线独立于生成模型。' },
@@ -39,7 +40,7 @@ export function SettingFields({parameters,values,onChange,effective,catalog}) {
   });
 }
 export function ModelWorkflowInfo() {
-  return <details className="dmc-model-info"><summary>模型调用与上下文如何分工</summary><p>DSH 的 API 配置负责连接模型服务。本插件还需在全局配置或来源覆盖中从下拉列表选择提供商和模型，才知道生成 / 分析时选择哪条宿主路由。</p><ol><li>评论先调用 Jev 轻量决策，返回各选项概率。忽略或人工介入时，界面显示固定的分流提示，不生成内容摘要或回复。</li><li>决策概率不足时，使用生成 / 分析模型升级判断一次，仍不确定则交给用户。</li><li>需要拟稿时生成评论回复。PR、issue、release 分别执行审查、核实、摘要任务。内容摘要与正文是该次生成 / 分析的输出，没有单独总结调用。</li><li>有拟发布正文后，独立监督会话检查草稿。上下文不完整的内容只标记人工介入，不调用模型。</li></ol><p>各阶段使用共用背景和仅属于当前阶段的专属上下文与资料，保留来源信息与原始内容及讨论。角色任务指令各不相同；决策升级附加 decision，监督附加 draft。共用原文与讨论完整保留，Jev 不带入其他阶段的专属背景。Jev 以 state 接收数据、问题 instructions 接收可信规则；Agent 使用真实 DSH 会话，人工会话保留完整历史。</p></details>;
+  return <details className="dmc-model-info"><summary>模型调用与上下文如何分工</summary><p>DSH 的 API 配置负责连接模型服务。本插件还需在全局配置或来源覆盖中从下拉列表选择提供商和模型，才知道生成 / 分析时选择哪条宿主路由。</p><ol><li>评论先调用 Jev 轻量决策，返回各选项概率。忽略或人工介入时，界面显示固定的分流提示，不生成内容摘要或回复。</li><li>决策概率不足时，使用生成 / 分析模型升级判断一次，仍不确定则交给用户。</li><li>需要拟稿时生成评论回复。PR、issue、release 分别执行审查、核实、摘要任务。内容摘要与正文是该次生成 / 分析的输出，没有单独总结调用。</li><li>有拟发布正文后，独立监督会话检查草稿。上下文不完整或含尚未读取图片的内容只标记人工介入，不调用模型。</li></ol><p>各阶段使用共用背景和仅属于当前阶段的专属上下文与资料，保留来源信息与原始内容及讨论。角色任务指令各不相同；决策升级附加 decision，监督附加 draft。共用原文与讨论完整保留，Jev 不带入其他阶段的专属背景。Jev 以 state 接收数据、问题 instructions 接收可信规则；Agent 使用真实 DSH 会话，人工会话保留完整历史。</p></details>;
 }
 export function roleLabel(role,itemKind) {
   return ({'decision-escalation':'低置信决策升级',writer:itemKind==='release'?'Release 摘要':'评论拟稿 / 生成分析',review:'PR 审查',investigate:'Issue 核实',supervisor:'独立监督',human:'人工处理',learning:'评价学习'})[role]??role;

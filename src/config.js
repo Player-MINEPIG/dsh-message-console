@@ -1,6 +1,10 @@
 import { validateInputOrder } from './input-assembly.js';
 import { normalizeTarget, validateMaterials, validateStageContexts } from './source-context.js';
 export const PARAMETERS = {
+  imageCacheMaxMB: { scope: 'cache', default: 256, type: 'number', min: 1, max: 4096 },
+  imageOriginalDays: { scope: 'cache', default: 7, type: 'number', min: 1, max: 365 },
+  imageThumbnailDays: { scope: 'cache', default: 30, type: 'number', min: 1, max: 365 },
+  imageCacheReserveMB: { scope: 'cache', default: 128, type: 'number', min: 16, max: 4096 },
   fetchHours: { scope: 'common', default: 6, type: 'number', min: 0.25, max: 168 },
   organizeHours: { scope: 'common', default: 6, type: 'number', min: 0.25, max: 168 },
   language: { scope: 'common', default: '中文', type: 'string' },

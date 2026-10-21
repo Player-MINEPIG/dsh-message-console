@@ -24,9 +24,14 @@ class ConsoleService {
   #aborts = /* @__PURE__ */ new Set();
   #timer;
   #closed = false;
-  constructor({ store, connectors, executor, workspaces, clock = Date.now }) {
-    Object.assign(this, { store, connectors, executor, workspaces, clock });
+  constructor({ store, connectors, executor, workspaces, imageCache, clock = Date.now }) {
+    Object.assign(this, { store, connectors, executor, workspaces, imageCache, clock });
   }
+  image(id, query) {
+    return required(this.imageCache, '图片缓存').get(this.store.image(id, query), query.variant ?? 'thumbnail');
+  }
+  imageCacheStatus() { return required(this.imageCache, '图片缓存').stats(); }
+  clearImageCache() { return required(this.imageCache, '图片缓存').clear(); }
   storageDirectory() {
     return this.store.directory;
   }
@@ -96,7 +101,9 @@ class ConsoleService {
     return { source, fields: metadataSuggestions(metadata, source), access: metadata.access, note: metadata.note ?? "", fallbackReason: metadata.fallbackReason ?? null };
   }
   async configure(settings) {
-    this.store.configure(validateSettings(settings));
+    const valid = validateSettings(settings);
+    if (this.imageCache) await this.imageCache.updateSettings(() => this.store.configure(valid));
+    else this.store.configure(valid);
   }
   async saveSource(input, id) {
     const valid = validateSource(input), prepared = await this.#prepare(valid), old = id ? required(this.store.source(id), "来源") : null;
@@ -661,6 +668,7 @@ class ConsoleService {
     clearInterval(this.#timer);
     for (const controller of this.#aborts) controller.abort({kind:'owner-disposed'});
     await Promise.allSettled(this.#jobs.values());
+    await this.imageCache?.close();
     await this.store.close();
   }
 }

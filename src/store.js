@@ -298,7 +298,7 @@ class Store {
     this.#run(`INSERT INTO items(id,source_id,remote_id,kind,version,previous_version,read_version,analyzed_version,context_version,handling,changed_at,analysis,data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,previous_version=excluded.previous_version,read_version=excluded.read_version,analyzed_version=excluded.analyzed_version,context_version=excluded.context_version,handling=excluded.handling,changed_at=excluded.changed_at,analysis=excluded.analysis,data=excluded.data`, item.id, item.sourceId, item.remoteId, item.kind, item.version, item.previous?.version ?? null, item.readVersion ?? null, item.analyzedVersion ?? null, item.analyzedContextVersion ?? null, item.handling ?? "none", item.changedAt ?? "", item.analysis ? json(item.analysis) : null, json(extras));
   }
   #version(item, complete) {
-    this.#run("INSERT OR IGNORE INTO item_versions(item_id,version,title,body,url,payload,changed_at,complete,data,metadata) VALUES(?,?,?,?,?,?,?,?,?,?)", item.id, item.version, item.title ?? "", item.body ?? "", item.url ?? null, item.payload ? json(item.payload) : null, item.changedAt ?? null, complete ? 1 : 0, json({ ...Object.fromEntries(Object.entries(item).filter(([key]) => !["id", "version", "changedAt", "title", "body", "payload", "url", "analysis", "sessions", "previous"].includes(key))), previousVersion: item.previous?.version ?? null }), json({ state: item.payload?.state, merged: item.payload?.merged, contextComplete: item.payload?.contextComplete, contextLimit: item.payload?.contextLimit, diffLength:0, ...item.payload?.video ? { video: { title: item.payload.video.title, owner: item.payload.video.owner, descriptionLength:0 } } : {} }));
+    this.#run("INSERT OR IGNORE INTO item_versions(item_id,version,title,body,url,payload,changed_at,complete,data,metadata) VALUES(?,?,?,?,?,?,?,?,?,?)", item.id, item.version, item.title ?? "", item.body ?? "", item.url ?? null, item.payload ? json(item.payload) : null, item.changedAt ?? null, complete ? 1 : 0, json({ ...Object.fromEntries(Object.entries(item).filter(([key]) => !["id", "version", "changedAt", "title", "body", "payload", "url", "analysis", "sessions", "previous"].includes(key))), previousVersion: item.previous?.version ?? null }), json({ ...(item.payload?.images?.length ? { images: item.payload.images } : {}), state: item.payload?.state, merged: item.payload?.merged, contextComplete: item.payload?.contextComplete, contextLimit: item.payload?.contextLimit, diffLength:0, ...item.payload?.video ? { video: { title: item.payload.video.title, owner: item.payload.video.owner, descriptionLength:0 } } : {} }));
     this.#run(`UPDATE item_versions SET metadata=CASE WHEN json_type(metadata,'$.video')='object' THEN json_set(metadata,'$.diffLength',coalesce(length(json_extract(payload,'$.diff')),0),'$.video.descriptionLength',coalesce(length(json_extract(payload,'$.video.description')),0)) ELSE json_set(metadata,'$.diffLength',coalesce(length(json_extract(payload,'$.diff')),0)) END WHERE item_id=? AND version=?`,item.id,item.version);
     let ordinal = 0;
     for (const comment of [...item.payload?.comments ?? [], ...item.payload?.reviewComments ?? []]) {
@@ -398,7 +398,7 @@ class Store {
   #card(row) {
     const item = this.#itemState(row), payload = { ...parse(row.payload), ...row.remote_state ? { state: row.remote_state } : {}, ...row.remote_merged !== void 0 && row.remote_merged !== null ? { merged: Boolean(row.remote_merged) } : {} };
     item.organization = this.#organization(item);
-    return { ...item, updatedAt: row.updated_at ?? remoteTime(item.updatedAt) ?? item.changedAt, title: row.title, url: row.url, analysis: currentAnalysis(item), priority: row.priority, needsHandling: Boolean(row.needs_handling), status: row.needs_handling ? "handling" : row.unread ? "unread" : "read", excerpt: row.excerpt, payload: { ...payload?.state ? { state: payload.state } : {}, ...payload?.merged !== void 0 ? { merged: payload.merged } : {}, ...payload?.contextComplete !== void 0 ? { contextComplete: payload.contextComplete } : {}, ...payload?.contextLimit ? { contextLimit: payload.contextLimit } : {}, ...payload?.video ? { video: payload.video } : {} } };
+    return { ...item, updatedAt: row.updated_at ?? remoteTime(item.updatedAt) ?? item.changedAt, title: row.title, url: row.url, analysis: currentAnalysis(item), priority: row.priority, needsHandling: Boolean(row.needs_handling), status: row.needs_handling ? "handling" : row.unread ? "unread" : "read", excerpt: row.excerpt, payload: { ...(payload?.images?.length ? { images: payload.images } : {}), ...payload?.state ? { state: payload.state } : {}, ...payload?.merged !== void 0 ? { merged: payload.merged } : {}, ...payload?.contextComplete !== void 0 ? { contextComplete: payload.contextComplete } : {}, ...payload?.contextLimit ? { contextLimit: payload.contextLimit } : {}, ...payload?.video ? { video: payload.video } : {} } };
   }
   items(sourceId, input = {}) {
     const source = required(this.source(sourceId), "来源");
@@ -427,6 +427,15 @@ class Store {
     if (version !== void 0) header.changedAt = v.changed_at;
     return { ...header, previous: previous ? { ...previous, complete: Boolean(previous.complete) } : null, commentsCount: this.#get("SELECT count(*) n FROM comments WHERE item_id=? AND version=?", id, v.version).n, bodyLength: v.body_length, diffLength: v.diff_length, contextVersion: row.context_version, complete: Boolean(v.complete) };
   }
+  image(id, { version, commentId, index } = {}) {
+    required(this.#itemRow(id), '内容项');
+    const number = Number(index);
+    if (!version || !Number.isSafeInteger(number) || number < 0) throw new Error('需要有效图片版本和序号');
+    const row = commentId == null
+      ? this.#get("SELECT json_extract(payload,'$.images') images FROM item_versions WHERE item_id=? AND version=?", id, version)
+      : this.#get("SELECT json_extract(data,'$.images') images FROM comments WHERE item_id=? AND version=? AND id=?", id, version, String(commentId));
+    return required(parse(row?.images)?.[number], '图片');
+  }
   content(id, { version, section = "body", commentId, offset = 0, length = 16e3 } = {}) {
     const item = required(this.#itemRow(id), "内容项");
     version ??= item.version;
@@ -446,7 +455,7 @@ class Store {
     version ??= row.version;
     required(this.#get("SELECT 1 FROM item_versions WHERE item_id=? AND version=?", id, version), "内容版本");
     const page = this.#page("SELECT count(*) n FROM comments WHERE item_id=? AND version=?", "SELECT id,author,substr(body,1,600) excerpt,length(body) bodyLength,data FROM comments WHERE item_id=? AND version=? ORDER BY ordinal,id LIMIT ? OFFSET ?", [id, version], input);
-    page.items = page.items.map(({ data, ...r }) => ({ ...r, parent: parse(data)?.parent ?? null, updatedAt: parse(data)?.updatedAt ?? null }));
+    page.items = page.items.map(({ data, ...r }) => ({ ...r, parent: parse(data)?.parent ?? null, updatedAt: parse(data)?.updatedAt ?? null, ...(parse(data)?.images?.length ? { images: parse(data).images } : {}) }));
     return page;
   }
   versions(id, input = {}) {
@@ -475,21 +484,24 @@ class Store {
     const last = checkRetry ? this.#get("SELECT status FROM runs WHERE item_id=? AND json_extract(data,'$.version')=? ORDER BY started_at DESC,rowid DESC LIMIT 1", id, version) : null;
     const base = { version, baseVersion, itemKind: item.kind, retry: ['failed', 'interrupted'].includes(last?.status) };
     if (!baseVersion || baseVersion === version) return { ...base, kind: initial ? 'initial' : 'new' };
-    const delta = this.#get(`SELECT a.title IS NOT b.title OR a.body IS NOT b.body rootChanged,
-      json_remove(a.payload,'$.comments','$.reviewComments') IS NOT json_remove(b.payload,'$.comments','$.reviewComments') contextChanged
+    const delta = this.#get(`SELECT a.title IS NOT b.title OR a.body IS NOT b.body rootTextChanged,
+      a.title IS NOT b.title OR a.body IS NOT b.body OR coalesce(json_extract(a.payload,'$.images'),'[]') IS NOT coalesce(json_extract(b.payload,'$.images'),'[]') rootChanged,
+      coalesce(json_extract(a.payload,'$.images'),'[]') IS NOT coalesce(json_extract(b.payload,'$.images'),'[]') rootImagesChanged,
+      json_remove(a.payload,'$.comments','$.reviewComments','$.images') IS NOT json_remove(b.payload,'$.comments','$.reviewComments','$.images') contextChanged
       FROM item_versions a JOIN item_versions b ON b.item_id=a.item_id WHERE a.item_id=? AND a.version=? AND b.version=?`, id, baseVersion, version);
     if (!delta) return { ...base, kind: 'unknown' };
     const { from, args } = this.#commentDelta(id, baseVersion, version);
-    const counts = Object.fromEntries(this.#all(`SELECT change,count(*) n ${from} GROUP BY change`, ...args).map(row => [row.change, row.n]));
-    const samples = this.#all(`SELECT id,author,substr(body,1,600) excerpt,length(body) bodyLength,change,version ${from} ORDER BY CASE change WHEN 'added' THEN 0 WHEN 'edited' THEN 1 ELSE 2 END,ordinal,id LIMIT 3`, ...args);
-    return { ...base, kind: 'changes', rootChanged: Boolean(delta.rootChanged), contextChanged: Boolean(delta.contextChanged), comments: { added: counts.added ?? 0, edited: counts.edited ?? 0, removed: counts.removed ?? 0, samples } };
+    const metrics = this.#all(`SELECT change,count(*) n,sum(imagesChanged) imageChanges ${from} GROUP BY change`, ...args);
+    const counts = Object.fromEntries(metrics.map(row => [row.change, row.n]));
+    const samples = this.#all(`SELECT id,author,substr(body,1,600) excerpt,length(body) bodyLength,change,version,json_extract(data,'$.images') images ${from} ORDER BY CASE change WHEN 'added' THEN 0 WHEN 'edited' THEN 1 ELSE 2 END,ordinal,id LIMIT 3`, ...args).map(row => ({ ...row, images: parse(row.images) ?? [] }));
+    return { ...base, kind: 'changes', rootChanged: Boolean(delta.rootChanged), rootTextChanged: Boolean(delta.rootTextChanged), rootImagesChanged: Boolean(delta.rootImagesChanged), contextChanged: Boolean(delta.contextChanged), comments: { added: counts.added ?? 0, edited: counts.edited ?? 0, removed: counts.removed ?? 0, imageChanges: metrics.reduce((n, row) => n + row.imageChanges, 0), samples } };
   }
   #commentDelta(id, baseVersion, version) {
     const from = `FROM (
-      SELECT n.id,n.author,n.body,n.data,n.ordinal,CASE WHEN o.id IS NULL THEN 'added' ELSE 'edited' END change,? version
+      SELECT n.id,n.author,n.body,n.data,n.ordinal,coalesce(json_extract(n.data,'$.images'),'[]') IS NOT coalesce(json_extract(o.data,'$.images'),'[]') imagesChanged,CASE WHEN o.id IS NULL THEN 'added' ELSE 'edited' END change,? version
       FROM comments n LEFT JOIN comments o ON o.item_id=n.item_id AND o.version=? AND o.id=n.id
       WHERE n.item_id=? AND n.version=? AND (o.id IS NULL OR n.body IS NOT o.body OR n.author IS NOT o.author OR n.data IS NOT o.data)
-      UNION ALL SELECT o.id,o.author,o.body,o.data,o.ordinal,'removed' change,? version
+      UNION ALL SELECT o.id,o.author,o.body,o.data,o.ordinal,coalesce(json_array_length(json_extract(o.data,'$.images')),0)>0 imagesChanged,'removed' change,? version
       FROM comments o WHERE o.item_id=? AND o.version=? AND NOT EXISTS (SELECT 1 FROM comments n WHERE n.item_id=o.item_id AND n.version=? AND n.id=o.id)
     )`;
     const args = [version, baseVersion, id, version, baseVersion, id, baseVersion, version];
@@ -499,7 +511,9 @@ class Store {
     required(this.#itemRow(id), '内容项');
     for (const value of [version, baseVersion]) required(this.#get('SELECT 1 FROM item_versions WHERE item_id=? AND version=?', id, value ?? null), '内容版本');
     const { from, args } = this.#commentDelta(id, baseVersion, version);
-    return this.#page(`SELECT count(*) n ${from}`, `SELECT id,author,substr(body,1,600) excerpt,length(body) bodyLength,change,version ${from} ORDER BY CASE change WHEN 'added' THEN 0 WHEN 'edited' THEN 1 ELSE 2 END,ordinal,id LIMIT ? OFFSET ?`, args, input);
+    const page = this.#page(`SELECT count(*) n ${from}`, `SELECT id,author,substr(body,1,600) excerpt,length(body) bodyLength,change,version,json_extract(data,'$.images') images ${from} ORDER BY CASE change WHEN 'added' THEN 0 WHEN 'edited' THEN 1 ELSE 2 END,ordinal,id LIMIT ? OFFSET ?`, args, input);
+    page.items = page.items.map(row => ({ ...row, images: parse(row.images) ?? [] }));
+    return page;
   }
   #reasonForRun(run, startedAt) {
     if (run.triggerReason) return run.triggerReason;

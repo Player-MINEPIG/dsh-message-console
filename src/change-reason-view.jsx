@@ -1,7 +1,8 @@
+import { ImageGallery } from './images-view.jsx';
 import React from 'react';
 import { reasonText, conclusionLabel } from './change-reason.js';
 
-export function ChangeReason({ organization, showComments = false }) {
+export function ChangeReason({ organization, itemId, showComments = false }) {
   if (!organization?.reason) return null;
   const { reason, pending } = organization, comments = reason.comments, samples = comments?.samples ?? [];
   const total = (comments?.added ?? 0) + (comments?.edited ?? 0) + (comments?.removed ?? 0);
@@ -13,6 +14,7 @@ export function ChangeReason({ organization, showComments = false }) {
     {showComments && replies && <div className="dmc-changed-comments">{samples.map(comment => <div className="dmc-changed-comment" key={comment.change + comment.id}>
       <small>楼中楼 · {{ added: '新增', edited: '修改', removed: '不再可见 · 此前采集的内容' }[comment.change]} · {comment.author || '作者未知'}</small>
       <p className="dmc-card-excerpt">{comment.excerpt || '（无文字内容）'}</p>
+      {itemId&&<ImageGallery itemId={itemId} version={comment.version} commentId={comment.id} images={comment.images} interactive={false}/>}
     </div>)}{total > samples.length && <p className="dmc-muted">共 {total} 条变化，展示前 {samples.length} 条；展开详情查看完整变化。</p>}</div>}
   </div>;
 }

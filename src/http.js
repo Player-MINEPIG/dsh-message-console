@@ -23,7 +23,8 @@ function createHandler(service, admission) {
       const path = url.pathname.slice(ROOT.length).split("/").filter(Boolean).map(decodeURIComponent), key = path.join("/"), query = Object.fromEntries(url.searchParams);
       if (req.method === "GET") {
         let result2;
-        if (key === "learning") result2 = service.learningList(query);
+        if (key === "image-cache") result2 = await service.imageCacheStatus();
+        else if (key === "learning") result2 = service.learningList(query);
         else if (path[0] === "learning" && path.length === 2) result2 = service.learning(path[1]);
         else if (key === "overview") result2 = service.overview(query);
         else if (key === "session-directory") result2 = service.sessionDirectory(query);
@@ -36,7 +37,12 @@ function createHandler(service, admission) {
         else if (path[0] === "sources" && path[2] === "items" && path.length === 3) result2 = service.items(path[1], query);
         else if (path[0] === "items" && path.length === 2) result2 = service.item(path[1], query.version);
         else if (path[0] === "items" && path.length === 3) {
-          if (path[2] === "feedback") result2 = service.feedback(path[1]);
+          if (path[2] === "image") {
+            const image = await service.image(path[1], query);
+            res.writeHead(200, { 'Content-Type': image.mime, 'Content-Length': image.body.length, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox" });
+            res.end(image.body); return;
+          }
+          else if (path[2] === "feedback") result2 = service.feedback(path[1]);
           else if (path[2] === "content") result2 = service.content(path[1], query);
           else if (path[2] === "changes") result2 = service.changedComments(path[1], query);
           else if (path[2] === "comments") result2 = service.comments(path[1], query.version, query);
@@ -50,7 +56,8 @@ function createHandler(service, admission) {
       if (req.headers["x-dsh-message-console"] !== "1" || !req.headers["content-type"]?.startsWith("application/json")) return send(403, { error: "请求来源校验失败" });
       const body = await jsonBody(req);
       let result = { ok: true };
-      if (key === "read-all") result = service.markAllRead(body);
+      if (key === "image-cache/clear") result = await service.clearImageCache();
+      else if (key === "read-all") result = service.markAllRead(body);
       else if (key === "learning") result = await service.startLearning(body);
       else if (path[0] === "learning" && path.length === 3 && path[2] === "apply") result = await service.applyLearning(path[1], body);
       else if (path[0] === "learning" && path.length === 3 && path[2] === "reject") result = service.rejectLearning(path[1], body);

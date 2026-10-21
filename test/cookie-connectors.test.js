@@ -36,3 +36,12 @@ test('GitHub PR pages never claim complete review threads without exhaustion evi
  const make=body=>parsePage('<meta name="user-login" content="test"><script data-target="react-app.embeddedData">'+JSON.stringify({payload})+'</script>'+body);
  for(const body of ['', '<div id="pullrequest-1"><div class="comment-body">body</div></div><include-fragment src="/review/thread"></include-fragment>'])assert.equal(parsePull(make(body),'o/r',{number:1,commentCount:0}).payload.contextComplete,false);
 });
+
+test('Bilibili preserves root and reply images, handles image-only roots and does not download images during collection',async()=>{
+ const photo=id=>({img_src:`http://i0.hdslb.com/bfs/new_dyn/${id}.png`,img_width:100,img_height:80,img_size:12});
+ const root={rpid_str:'root',rcount:1,content:{message:'',pictures:[photo('root')]}};
+ const urls=[],transport={identities:{},json:async(_,url)=>{urls.push(url);if(url.includes('/nav'))return {isLogin:true};if(url.includes('/view'))return {aid:1,bvid:'BV1111111111'};if(url.includes('/reply/reply'))return {page:{size:20,count:1},replies:[{rpid_str:'child',parent_str:'root',content:{message:'配图',pictures:[photo('child')]}}]};return {page:{size:20,count:2},replies:[root]};}};
+ const data=await new BilibiliConnector(transport).fetch({target:'BV1111111111'}),item=data.items[0];
+ assert.equal(item.title,'图片评论');assert.equal(item.body,'');assert.equal(item.payload.images[0].url,'https://i0.hdslb.com/bfs/new_dyn/root.png');
+ assert.equal(item.payload.comments[0].images[0].url,'https://i0.hdslb.com/bfs/new_dyn/child.png');assert.ok(urls.every(url=>new URL(url).hostname==='api.bilibili.com'));
+});

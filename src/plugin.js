@@ -1,3 +1,5 @@
+import { ImageCache } from './image-cache.js';
+import { join } from 'node:path';
 import Schema from '@deepseek-ai/schemastery';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
@@ -32,7 +34,8 @@ export async function apply(ctx, config) {
   const workspaces = createDshWorkspaces(ctx);
   let service;
   const executor = createDshExecutor(ctx, { createUserMessage, SessionId, service: () => service, timeoutMs: config.timeoutMs, workspaces });
-  service = new ConsoleService({ store, connectors, executor, workspaces });
+  const imageCache = await new ImageCache(join(config.storageDir, 'images'), { settings: () => store.settings() }).start();
+  service = new ConsoleService({ store, connectors, executor, workspaces, imageCache });
   await installAgentTools(ctx, service);
   ctx.provide('messageConsole', service);
   ctx.effect(() => () => service.close());

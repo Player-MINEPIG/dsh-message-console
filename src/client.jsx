@@ -1,3 +1,4 @@
+import { ImageGallery, ImageCachePanel } from './images-view.jsx';
 import { ChangeReason } from './change-reason-view.jsx';
 import { syncSessionDirectory } from './session-directory.js';
 import React, { useEffect, useRef, useState } from 'react';
@@ -53,13 +54,14 @@ export function ConsoleApp({openSession=()=>{},close,demo=false}) {
 }
 function GlobalSettings({state,action,pending,catalog}) {
   const [values,setValues]=useState(state.settings);
-  return <main className="dmc-settings dmc-global-settings"><span className="dmc-eyebrow">MAKE IT YOURS</span><h2>全局配置</h2><p className="dmc-muted">默认值按能力生效。来源可以单独覆盖，发布授权独立管理。清空字段恢复内置默认值。</p><CatalogStatus catalog={catalog}/><ModelWorkflowInfo/><form onSubmit={event=>{event.preventDefault();void action('settings',values);}}><SettingFields catalog={catalog} parameters={state.parameters} values={values} onChange={setValues}/><button className="dmc-primary" disabled={pending}>保存默认值</button></form></main>;
+  return <main className="dmc-settings dmc-global-settings"><span className="dmc-eyebrow">MAKE IT YOURS</span><h2>全局配置</h2><p className="dmc-muted">默认值按能力生效。来源可以单独覆盖，发布授权独立管理。清空字段恢复内置默认值。</p><CatalogStatus catalog={catalog}/><ModelWorkflowInfo/><form onSubmit={event=>{event.preventDefault();void action('settings',values);}}><SettingFields catalog={catalog} parameters={state.parameters} values={values} onChange={setValues}/><button className="dmc-primary" disabled={pending}>保存默认值</button></form><ImageCachePanel revision={state.revision}/></main>;
 }
 function Detail({selection,source,revision,action,pending,openSession,close,onFeedbackDirty,onFeedbackSaved}) {
   const root=`items/${encodeURIComponent(selection.id)}`;
   const header=useRemoteResource(`${root}?version=${encodeURIComponent(selection.version)}`,{revision,pollMs:5000}),item=header.data;
   return <section className="dmc-detail"><header><span>{item?labels[item.kind]:'内容详情'}</span><button aria-label="关闭详情" onClick={close}>×</button></header><ResourceError error={header.error}/>{!item?<p>正在加载详情…</p>:<><h2>{item.title}</h2>{githubStateLabel(item)&&<p>{githubStateLabel(item)}</p>}<a href={safeURL(item.url)} target="_blank" rel="noreferrer">查看原始来源 ↗</a><div className="dmc-detail-actions"><select aria-label="处理状态" value={item.handling} onChange={event=>action(`${root}/handling`,{handling:event.target.value})}>{['none','pending','later','done'].map(value=><option key={value} value={value}>{labels[value]}</option>)}</select><button disabled={pending} onClick={async()=>{const result=await action(`${root}/conversation`);if(result)openSession(result.sessionId);}}>进入会话处理 ↗</button></div>
     {currentAnalysis(item)&&<div className="dmc-analysis"><h3>整理结果</h3><p>{item.analysis.summary}</p><small>{item.analysis.reason}</small></div>}
+    <ImageGallery itemId={item.id} version={item.version} images={item.payload?.images}/>
     <ChangeReason organization={item.organization}/>
     {item.organization?.reason?.comments?.samples?.length>0&&<Expandable title="本轮楼中楼变化" initialOpen><ChangedComments key={`${item.id}:${item.organization.reason.baseVersion}:${item.version}`} root={root} reason={item.organization.reason}/></Expandable>}
     <FeedbackEditor item={item} revision={revision} onDirtyChange={onFeedbackDirty} onSaved={onFeedbackSaved}/>
@@ -97,16 +99,20 @@ function ContentChunks({path}) {
 export function ChangedComments({root,reason}) {
   const [page,setPage]=useState(1);
   const resource=useRemoteResource(`${root}/changes?version=${encodeURIComponent(reason.version)}&baseVersion=${encodeURIComponent(reason.baseVersion)}&page=${page}&pageSize=10`),data=resource.data;
-  return <><ResourceError error={resource.error}/>{!data&&!resource.error&&<p>正在加载楼中楼变化…</p>}{data?.items.map(comment=><div className="dmc-changed-comment" key={comment.change+comment.id}><small>{{added:'新增',edited:'修改',removed:'不再可见 · 此前采集的内容'}[comment.change]} · {comment.author||'作者未知'}</small><Expandable title={comment.excerpt||'查看评论全文'}><ContentChunks path={`${root}/content?version=${encodeURIComponent(comment.version)}&section=comment&commentId=${encodeURIComponent(comment.id)}`}/></Expandable></div>)}{data&&<ListPagination pagination={data} onPage={setPage} label="楼中楼变化分页"/>}</>;
+  return <><ResourceError error={resource.error}/>{!data&&!resource.error&&<p>正在加载楼中楼变化…</p>}{data?.items.map(comment=><div className="dmc-changed-comment" key={comment.change+comment.id}><small>{{added:'新增',edited:'修改',removed:'不再可见 · 此前采集的内容'}[comment.change]} · {comment.author||'作者未知'}</small><ImageGallery itemId={decodeURIComponent(root.slice(6))} version={comment.version} commentId={comment.id} images={comment.images}/><Expandable title={comment.excerpt||'查看评论全文'}><ContentChunks path={`${root}/content?version=${encodeURIComponent(comment.version)}&section=comment&commentId=${encodeURIComponent(comment.id)}`}/></Expandable></div>)}{data&&<ListPagination pagination={data} onPage={setPage} label="楼中楼变化分页"/>}</>;
 }
 function Comments({root,version}) {
   const [page,setPage]=useState(1),[pageSize,setPageSize]=useState(10);
   const resource=useRemoteResource(`${root}/comments?version=${encodeURIComponent(version)}&page=${page}&pageSize=${pageSize}`),data=resource.data;
-  return <><ResourceError error={resource.error}/>{resource.loading&&!data&&<p>正在加载评论…</p>}{data?.items.map(comment=><blockquote key={comment.id}><strong>{comment.author||'未知作者'}</strong>{comment.parent&&<small> · 回复 {comment.parent}</small>}<p>{comment.excerpt}</p><Expandable title="查看此评论全文"><ContentChunks path={`${root}/content?version=${encodeURIComponent(version)}&section=comment&commentId=${encodeURIComponent(comment.id)}`}/></Expandable></blockquote>)}{data&&<ListPagination pagination={data} pageSize={pageSize} onPage={setPage} onPageSize={value=>{setPage(1);setPageSize(value);}} label="评论分页"/>}</>;
+  return <><ResourceError error={resource.error}/>{resource.loading&&!data&&<p>正在加载评论…</p>}{data?.items.map(comment=><blockquote key={comment.id}><strong>{comment.author||'未知作者'}</strong>{comment.parent&&<small> · 回复 {comment.parent}</small>}<p>{comment.excerpt}</p><ImageGallery itemId={decodeURIComponent(root.slice(6))} version={version} commentId={comment.id} images={comment.images}/><Expandable title="查看此评论全文"><ContentChunks path={`${root}/content?version=${encodeURIComponent(version)}&section=comment&commentId=${encodeURIComponent(comment.id)}`}/></Expandable></blockquote>)}{data&&<ListPagination pagination={data} pageSize={pageSize} onPage={setPage} onPageSize={value=>{setPage(1);setPageSize(value);}} label="评论分页"/>}</>;
+}
+function VersionImages({root,version}) {
+  const resource=useRemoteResource(`${root}?version=${encodeURIComponent(version)}`);
+  return <><ResourceError error={resource.error}/><ImageGallery itemId={decodeURIComponent(root.slice(6))} version={version} images={resource.data?.payload?.images}/></>;
 }
 function Versions({root}) {
   const [page,setPage]=useState(1),resource=useRemoteResource(`${root}/versions?page=${page}&pageSize=10`),data=resource.data;
-  return <><ResourceError error={resource.error}/>{data?.items.map(version=><div key={version.version}><p>{time(version.changedAt)} · {version.title}</p>{version.complete?<Expandable title={`查看版本 ${version.version}`}><ContentChunks path={`${root}/content?version=${encodeURIComponent(version.version)}&section=body`}/></Expandable>:<p className="dmc-muted">旧记录仅保留版本摘要，没有完整原文。</p>}</div>)}{data&&<ListPagination pagination={data} onPage={setPage} label="版本分页"/>}</>;
+  return <><ResourceError error={resource.error}/>{data?.items.map(version=><div key={version.version}><p>{time(version.changedAt)} · {version.title}</p>{version.complete?<Expandable title={`查看版本 ${version.version}`}><ContentChunks path={`${root}/content?version=${encodeURIComponent(version.version)}&section=body`}/><VersionImages root={root} version={version.version}/></Expandable>:<p className="dmc-muted">旧记录仅保留版本摘要，没有完整原文。</p>}</div>)}{data&&<ListPagination pagination={data} onPage={setPage} label="版本分页"/>}</>;
 }
 function Drafts({root,source,revision,pending,action}) {
   const [page,setPage]=useState(1),resource=useRemoteResource(`${root}/drafts?page=${page}&pageSize=10`,{revision,pollMs:5000}),data=resource.data;
