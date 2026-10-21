@@ -61,3 +61,12 @@ test('read endpoints dispatch bounded page, precise content version, draft and d
  const content=await get('items/source%3Ac/content?version=old&section=comment&commentId=123&offset=0&length=16');assert.equal(content.result.text,'原文');assert.equal(calls[1].id,'source:c');assert.equal(calls[1].query.version,'old');
  assert.equal((await get('drafts/draft')).result.body,'saved');assert.equal((await get('runs/run/decision')).result.input.state,'run');assert.equal((await get('items/id/content/unexpected')).status,404);
 });
+
+test('changed-comment endpoint keeps owner authentication and forwards both immutable versions and pagination',async()=>{
+ const {Readable}=await import('node:stream');const calls=[];
+ const handler=createHandler({changedComments:(id,query)=>{calls.push({id,query});return {items:[{id:'old',change:'removed',version:query.baseVersion}],total:1,page:1,pageSize:10,pageCount:1};}},req=>req.headers['x-test-owner']==='1'?{}:{rejection:401});
+ async function get(headers){const req=Readable.from([]);Object.assign(req,{method:'GET',url:'/api/dsh-message-console/items/source%3Aroot/changes?version=new&baseVersion=old&page=2&pageSize=10',headers});let code,data;await handler(req,{writeHead(value){code=value;},end(value){data=JSON.parse(value);}});return {code,data};}
+ assert.equal((await get({})).code,401);assert.equal(calls.length,0);
+ const result=await get({'x-test-owner':'1'});assert.equal(result.code,200);assert.equal(result.data.items[0].version,'old');
+ assert.deepEqual(calls,[{id:'source:root',query:{version:'new',baseVersion:'old',page:'2',pageSize:'10'}}]);
+});

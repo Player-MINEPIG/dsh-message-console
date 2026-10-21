@@ -134,3 +134,25 @@ test('work record preserves failed stage and separately presents later saved ana
  const css=await readFile('src/style.css','utf8');
  await writeFile('.local/session-reuse-20261021/work-records-preview.html',`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>工作记录 · 隔离合成验收</title><style>${css}</style><body><main class="dmc" style="max-width:900px;margin:36px auto"><h1>工作记录 · 隔离合成验收</h1><p>全部为合成记录，没有连接生产或真实会话。</p><h2>阶段5分钟失败后补交分析</h2>${html}<h2>正常分析与独立监督</h2>${normalHtml.replace('<details','<details open')}<h2>异步补交草稿仍待监督</h2>${lateHtml}</main></body></html>`);
 });
+
+test('outer comment card highlights changed replies, preserves root context and distinguishes whole-thread suggestions',()=>{
+  const item={id:'i',kind:'comment',status:'handling',handling:'pending',title:'此前看过的根评论',excerpt:'根正文',version:'v2',analyzedVersion:'v2',analysis:{processing:'decision-only',reason:'新问题需要本人判断',importance:2},organization:{conclusion:'human',reason:{kind:'changes',itemKind:'comment',rootChanged:false,contextChanged:false,previousConclusion:'ignore',comments:{added:1,edited:0,removed:0,samples:[{id:'r',change:'added',author:'楼内观众',excerpt:'<script>楼内新问题</script>'}]}}}};
+  const html=render(ItemCard,{item,onSelect(){}});
+  assert.match(html,/<h3>楼中楼对话变化<\/h3>/);assert.match(html,/根评论：此前看过的根评论/);
+  assert.match(html,/触发原因：楼中楼新增 1 条/);assert.match(html,/根评论未变化/);
+  assert.match(html,/整楼处理建议：无需回复 → 需你判断/);assert.match(html,/楼内观众/);
+  assert.match(html,/&lt;script&gt;楼内新问题&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>/);
+  assert.ok(html.indexOf('楼内新问题')<html.indexOf('根评论原文'));
+  const removed=structuredClone(item);removed.organization.reason.comments={added:0,edited:0,removed:1,samples:[{id:'old',change:'removed',author:'原作者',excerpt:'之前影响判断的回复'}]};removed.organization.conclusion='ignore';
+  const missing=render(ItemCard,{item:removed,onSelect(){}});
+  assert.match(missing,/楼中楼不再可见 1 条/);assert.match(missing,/不再可见 · 此前采集的内容/);
+  assert.match(missing,/之前影响判断的回复/);assert.match(missing,/整楼处理建议未变：无需回复/);assert.doesNotMatch(missing,/已删除/);
+});
+
+test('work record shows frozen cause and historical reply excerpt without inventing legacy cause',()=>{
+  const base={id:'r',kind:'automatic',status:'completed',trigger:'scheduled',startedAt:'2026-10-21T00:00:00Z',processing:'decision-only',triggerReason:{kind:'changes',itemKind:'comment',rootChanged:false,comments:{added:0,edited:0,removed:1,samples:[{id:'old',change:'removed',author:'旧作者',excerpt:'旧楼中楼'}]}}};
+  const html=render(WorkRecord,{run:base,item:{kind:'comment'},openSession(){}});
+  assert.match(html,/定时触发/);assert.match(html,/触发原因：楼中楼不再可见 1 条/);assert.match(html,/旧楼中楼/);
+  const unknown=render(WorkRecord,{run:{...base,triggerReason:{kind:'unknown'}},item:{kind:'comment'},openSession(){}});
+  assert.match(unknown,/无法还原触发原因/);assert.doesNotMatch(unknown,/楼中楼不再可见/);
+});

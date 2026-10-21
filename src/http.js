@@ -38,6 +38,7 @@ function createHandler(service, admission) {
         else if (path[0] === "items" && path.length === 3) {
           if (path[2] === "feedback") result2 = service.feedback(path[1]);
           else if (path[2] === "content") result2 = service.content(path[1], query);
+          else if (path[2] === "changes") result2 = service.changedComments(path[1], query);
           else if (path[2] === "comments") result2 = service.comments(path[1], query.version, query);
           else if (["runs", "drafts", "versions"].includes(path[2])) result2 = service[path[2]](path[1], query);
           else return send(404, { error: "路径不存在" });

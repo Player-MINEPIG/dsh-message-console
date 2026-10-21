@@ -1,3 +1,4 @@
+import { ChangeReason } from './change-reason-view.jsx';
 import { syncSessionDirectory } from './session-directory.js';
 import React, { useEffect, useRef, useState } from 'react';
 import styles from './style.css';
@@ -59,6 +60,8 @@ function Detail({selection,source,revision,action,pending,openSession,close,onFe
   const header=useRemoteResource(`${root}?version=${encodeURIComponent(selection.version)}`,{revision,pollMs:5000}),item=header.data;
   return <section className="dmc-detail"><header><span>{item?labels[item.kind]:'内容详情'}</span><button aria-label="关闭详情" onClick={close}>×</button></header><ResourceError error={header.error}/>{!item?<p>正在加载详情…</p>:<><h2>{item.title}</h2>{githubStateLabel(item)&&<p>{githubStateLabel(item)}</p>}<a href={safeURL(item.url)} target="_blank" rel="noreferrer">查看原始来源 ↗</a><div className="dmc-detail-actions"><select aria-label="处理状态" value={item.handling} onChange={event=>action(`${root}/handling`,{handling:event.target.value})}>{['none','pending','later','done'].map(value=><option key={value} value={value}>{labels[value]}</option>)}</select><button disabled={pending} onClick={async()=>{const result=await action(`${root}/conversation`);if(result)openSession(result.sessionId);}}>进入会话处理 ↗</button></div>
     {currentAnalysis(item)&&<div className="dmc-analysis"><h3>整理结果</h3><p>{item.analysis.summary}</p><small>{item.analysis.reason}</small></div>}
+    <ChangeReason organization={item.organization}/>
+    {item.organization?.reason?.comments?.samples?.length>0&&<Expandable title="本轮楼中楼变化" initialOpen><ChangedComments key={`${item.id}:${item.organization.reason.baseVersion}:${item.version}`} root={root} reason={item.organization.reason}/></Expandable>}
     <FeedbackEditor item={item} revision={revision} onDirtyChange={onFeedbackDirty} onSaved={onFeedbackSaved}/>
     <VideoContext root={root} item={item}/>
     {item.payload?.contextLimit&&<p className="dmc-muted">{item.payload.contextLimit}</p>}
@@ -90,6 +93,11 @@ function ContentChunks({path}) {
   };
   useEffect(()=>{generation.current++;inflight.current=false;setContent({text:'',nextOffset:0,total:0,complete:false});void load(0,true);return()=>{generation.current++;};},[path]);
   return <div className="dmc-original"><pre>{content.text||(!busy&&!error?'无文本内容':'')}</pre><ResourceError error={error}/>{busy?<p role="status">正在加载原文…</p>:!content.complete?<button onClick={()=>load(content.nextOffset)}>加载更多原文 · 已加载 {content.nextOffset??content.total} / {content.total||'未知'} 字符</button>:<small className="dmc-muted">全文已加载 · {content.total} 字符</small>}</div>;
+}
+export function ChangedComments({root,reason}) {
+  const [page,setPage]=useState(1);
+  const resource=useRemoteResource(`${root}/changes?version=${encodeURIComponent(reason.version)}&baseVersion=${encodeURIComponent(reason.baseVersion)}&page=${page}&pageSize=10`),data=resource.data;
+  return <><ResourceError error={resource.error}/>{!data&&!resource.error&&<p>正在加载楼中楼变化…</p>}{data?.items.map(comment=><div className="dmc-changed-comment" key={comment.change+comment.id}><small>{{added:'新增',edited:'修改',removed:'不再可见 · 此前采集的内容'}[comment.change]} · {comment.author||'作者未知'}</small><Expandable title={comment.excerpt||'查看评论全文'}><ContentChunks path={`${root}/content?version=${encodeURIComponent(comment.version)}&section=comment&commentId=${encodeURIComponent(comment.id)}`}/></Expandable></div>)}{data&&<ListPagination pagination={data} onPage={setPage} label="楼中楼变化分页"/>}</>;
 }
 function Comments({root,version}) {
   const [page,setPage]=useState(1),[pageSize,setPageSize]=useState(10);

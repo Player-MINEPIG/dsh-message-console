@@ -4,6 +4,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { learningHash, proposalChanges } from "./learning.js";
 import { itemPriority, currentAnalysis, needsHandling } from "./dashboard.js";
+import { conclusion } from './change-reason.js';
 const json = (value) => JSON.stringify(value ?? null);
 const parse = (value) => value ? JSON.parse(value) : null;
 const canonical = (value) => JSON.stringify(value, (_, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
@@ -396,6 +397,7 @@ class Store {
   }
   #card(row) {
     const item = this.#itemState(row), payload = { ...parse(row.payload), ...row.remote_state ? { state: row.remote_state } : {}, ...row.remote_merged !== void 0 && row.remote_merged !== null ? { merged: Boolean(row.remote_merged) } : {} };
+    item.organization = this.#organization(item);
     return { ...item, updatedAt: row.updated_at ?? remoteTime(item.updatedAt) ?? item.changedAt, title: row.title, url: row.url, analysis: currentAnalysis(item), priority: row.priority, needsHandling: Boolean(row.needs_handling), status: row.needs_handling ? "handling" : row.unread ? "unread" : "read", excerpt: row.excerpt, payload: { ...payload?.state ? { state: payload.state } : {}, ...payload?.merged !== void 0 ? { merged: payload.merged } : {}, ...payload?.contextComplete !== void 0 ? { contextComplete: payload.contextComplete } : {}, ...payload?.contextLimit ? { contextLimit: payload.contextLimit } : {}, ...payload?.video ? { video: payload.video } : {} } };
   }
   items(sourceId, input = {}) {
@@ -419,7 +421,7 @@ class Store {
     const row = required(this.#itemRow(id), "内容项"), v = required(this.#get(`SELECT title,url,length(body) body_length,json_extract(metadata,'$.diffLength') diff_length,metadata payload,json_extract(payload,'$.state') remote_state,json_extract(payload,'$.merged') remote_merged,version,complete,data,changed_at FROM item_versions WHERE item_id=? AND version=?`, id, version ?? row.version), "内容版本");
     const header = this.#card({ ...row, title: v.title, url: v.url, excerpt: "", payload: v.payload, remote_state: v.remote_state, remote_merged: v.remote_merged });
     header.version = v.version;
-    if (v.version !== row.version) header.analysis = null;
+    if (v.version !== row.version) { header.analysis = null; header.organization = null; }
     const previousVersion = version === void 0 ? row.previous_version : parse(v.data).previousVersion;
     const previous = previousVersion ? this.#get("SELECT version,title,complete FROM item_versions WHERE item_id=? AND version=?", id, previousVersion) : null;
     if (version !== void 0) header.changedAt = v.changed_at;
@@ -466,6 +468,58 @@ class Store {
     const refs = rows.filter(row => includeClosed || !(['issue','pr'].includes(row.kind) && (['closed','merged'].includes(String(row.state).toLowerCase()) || row.merged === 1))).map(({id,version}) => ({id,version}));
     return { total, refs, excludedClosed: rows.length - refs.length, unanalysed: this.#get("SELECT count(*) n FROM items WHERE source_id=? AND analysis IS NULL", sourceId).n };
   }
+  organizationReason(id, { version, baseVersion, initial = false, checkRetry = false } = {}) {
+    const item = required(this.#itemRow(id), '内容项');
+    version ??= item.version;
+    if (baseVersion === undefined) baseVersion = item.analyzed_version;
+    const last = checkRetry ? this.#get("SELECT status FROM runs WHERE item_id=? AND json_extract(data,'$.version')=? ORDER BY started_at DESC,rowid DESC LIMIT 1", id, version) : null;
+    const base = { version, baseVersion, itemKind: item.kind, retry: ['failed', 'interrupted'].includes(last?.status) };
+    if (!baseVersion || baseVersion === version) return { ...base, kind: initial ? 'initial' : 'new' };
+    const delta = this.#get(`SELECT a.title IS NOT b.title OR a.body IS NOT b.body rootChanged,
+      json_remove(a.payload,'$.comments','$.reviewComments') IS NOT json_remove(b.payload,'$.comments','$.reviewComments') contextChanged
+      FROM item_versions a JOIN item_versions b ON b.item_id=a.item_id WHERE a.item_id=? AND a.version=? AND b.version=?`, id, baseVersion, version);
+    if (!delta) return { ...base, kind: 'unknown' };
+    const { from, args } = this.#commentDelta(id, baseVersion, version);
+    const counts = Object.fromEntries(this.#all(`SELECT change,count(*) n ${from} GROUP BY change`, ...args).map(row => [row.change, row.n]));
+    const samples = this.#all(`SELECT id,author,substr(body,1,600) excerpt,length(body) bodyLength,change,version ${from} ORDER BY CASE change WHEN 'added' THEN 0 WHEN 'edited' THEN 1 ELSE 2 END,ordinal,id LIMIT 3`, ...args);
+    return { ...base, kind: 'changes', rootChanged: Boolean(delta.rootChanged), contextChanged: Boolean(delta.contextChanged), comments: { added: counts.added ?? 0, edited: counts.edited ?? 0, removed: counts.removed ?? 0, samples } };
+  }
+  #commentDelta(id, baseVersion, version) {
+    const from = `FROM (
+      SELECT n.id,n.author,n.body,n.data,n.ordinal,CASE WHEN o.id IS NULL THEN 'added' ELSE 'edited' END change,? version
+      FROM comments n LEFT JOIN comments o ON o.item_id=n.item_id AND o.version=? AND o.id=n.id
+      WHERE n.item_id=? AND n.version=? AND (o.id IS NULL OR n.body IS NOT o.body OR n.author IS NOT o.author OR n.data IS NOT o.data)
+      UNION ALL SELECT o.id,o.author,o.body,o.data,o.ordinal,'removed' change,? version
+      FROM comments o WHERE o.item_id=? AND o.version=? AND NOT EXISTS (SELECT 1 FROM comments n WHERE n.item_id=o.item_id AND n.version=? AND n.id=o.id)
+    )`;
+    const args = [version, baseVersion, id, version, baseVersion, id, baseVersion, version];
+    return { from, args };
+  }
+  changedComments(id, { version, baseVersion, ...input } = {}) {
+    required(this.#itemRow(id), '内容项');
+    for (const value of [version, baseVersion]) required(this.#get('SELECT 1 FROM item_versions WHERE item_id=? AND version=?', id, value ?? null), '内容版本');
+    const { from, args } = this.#commentDelta(id, baseVersion, version);
+    return this.#page(`SELECT count(*) n ${from}`, `SELECT id,author,substr(body,1,600) excerpt,length(body) bodyLength,change,version ${from} ORDER BY CASE change WHEN 'added' THEN 0 WHEN 'edited' THEN 1 ELSE 2 END,ordinal,id LIMIT ? OFFSET ?`, args, input);
+  }
+  #reasonForRun(run, startedAt) {
+    if (run.triggerReason) return run.triggerReason;
+    const previous = this.#get(`SELECT data FROM runs WHERE item_id=? AND json_extract(data,'$.resultAdopted')=1
+      AND (started_at<? OR (started_at=? AND rowid<(SELECT rowid FROM runs WHERE id=?))) ORDER BY started_at DESC,rowid DESC LIMIT 1`, run.itemId, startedAt, startedAt, run.id);
+    if (!previous) return { kind: 'unknown', version: run.version };
+    const before = parse(previous.data);
+    if (before.version === run.version) return { kind: 'same-version', version: run.version };
+    return { ...this.organizationReason(run.itemId, { version: run.version, baseVersion: before.version }), previousConclusion: conclusion(before.result), inferred: true };
+  }
+  #organization(item) {
+    if (item.analyzedVersion && item.analyzedVersion !== item.version) return { pending: true, reason: this.organizationReason(item.id) };
+    const row = this.#get(`SELECT started_at,json_remove(data,'$.result','$.inputSnapshot','$.settingsSnapshot') data FROM runs WHERE item_id=? AND json_extract(data,'$.version')=? AND json_extract(data,'$.resultAdopted')=1
+      AND coalesce(json_extract(data,'$.kind'),'automatic')<>'analysis-revision' ORDER BY started_at DESC,rowid DESC LIMIT 1`, item.id, item.version);
+    if (row) {
+      const run = parse(row.data);
+      return { runId: run.id, reason: this.#reasonForRun(run, row.started_at), conclusion: item.kind === 'comment' ? conclusion(item.analysis) : null };
+    }
+    return null;
+  }
   #writeRun(run) {
     const { decision, sourceSnapshot, submission, ...data } = run;
     this.#run("INSERT INTO runs VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data,decision=coalesce(excluded.decision,runs.decision),source_snapshot=coalesce(excluded.source_snapshot,runs.source_snapshot)", run.id, run.itemId, run.status ?? "running", run.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(), json(data), decision ? json(decision) : null, sourceSnapshot ? json(sourceSnapshot) : null);
@@ -493,7 +547,11 @@ class Store {
     required(this.#itemRow(id), "内容项");
     const from = `FROM (SELECT id,json_remove(data,'$.inputSnapshot','$.settingsSnapshot','$.result') data,decision IS NOT NULL hasDecision,started_at,0 legacy FROM runs WHERE item_id=? UNION ALL SELECT session_id id,data,0 hasDecision,coalesce(json_extract(data,'$.at'),'') started_at,1 legacy FROM sessions WHERE item_id=? AND run_id IS NULL)`;
     const page = this.#page(`SELECT count(*) n ${from}`, `SELECT * ${from} ORDER BY started_at DESC,id LIMIT ? OFFSET ?`, [id, id], input);
-    page.items = page.items.map((row) => row.legacy ? { id: `legacy-session:${row.id}`, legacy: true, kind: "legacy-session", status: "historical", startedAt: row.started_at, sessions: [parse(row.data)], hasDecision: false } : { ...parse(row.data), hasDecision: Boolean(row.hasDecision), sessions: this.#runSessions(row.id, parse(row.data)), submission: this.runSubmission(row.id) });
+    page.items = page.items.map((row) => {
+      if (row.legacy) return { id: `legacy-session:${row.id}`, legacy: true, kind: "legacy-session", status: "historical", startedAt: row.started_at, sessions: [parse(row.data)], hasDecision: false };
+      const run = parse(row.data);
+      return { ...run, startedAt: row.started_at, triggerReason: this.#reasonForRun(run, row.started_at), hasDecision: Boolean(row.hasDecision), sessions: this.#runSessions(row.id, run), submission: this.runSubmission(row.id) };
+    });
     return page;
   }
   decision(id) {

@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { realpath } from "node:fs/promises";
 import { validateSource, validateSettings, resolveSettings, valuesOf, PARAMETERS } from "./config.js";
 import { suggestionTarget, metadataSuggestions } from "./source-suggestions.js";
+import { conclusion } from './change-reason.js';
 const fingerprint = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const nowISO = (clock) => new Date(clock()).toISOString();
 const required = (value, label) => {
@@ -59,6 +60,9 @@ class ConsoleService {
   }
   comments(id, version, query) {
     return this.store.comments(id, version, query);
+  }
+  changedComments(id, query) {
+    return this.store.changedComments(id, query);
   }
   runs(id, query) {
     return this.store.runs(id, query);
@@ -327,7 +331,8 @@ class ConsoleService {
       if (this.#closed) break;
       const item = required(this.store.item(ref.id), "内容项");
       if (item.version !== ref.version) continue;
-      const run = this.store.createRun({ ...this.#runRecord(source, item, prepared), trigger }), controller = new AbortController();
+      const triggerReason = { ...this.store.organizationReason(item.id, { initial: scope === 'history' && !item.analysis, checkRetry: true }), previousConclusion: item.kind === 'comment' ? conclusion(item.analysis) : null };
+      const run = this.store.createRun({ ...this.#runRecord(source, item, prepared), trigger, triggerReason }), controller = new AbortController();
       this.#aborts.add(controller);
       try {
         if (preparationError) throw preparationError;
