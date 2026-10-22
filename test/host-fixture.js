@@ -43,7 +43,7 @@ export async function hostFixture(root) {
   return { ctx, llm, sessions, directory, workspace, registeredWorkspace, load,
     async executorOwner(service, options = {}) {
       let executor;
-      const owner = await ctx.plugin({ inject: ['workspaceRegistry', 'agents', 'agentPresets', 'permissionPresets', 'sessions', 'sessionPersistence', 'dshPromptAssembler', 'llm'], apply(ownerCtx) { executor = createDshExecutor(ownerCtx, { createUserMessage: llm.createUserMessage, SessionId: sessions.SessionId, service, ...options }); } });
+      const owner = await ctx.plugin({ inject: ['loader', 'workspaceRegistry', 'agents', 'agentPresets', 'permissionPresets', 'sessions', 'sessionPersistence', 'dshPromptAssembler', 'llm'], apply(ownerCtx) { executor = createDshExecutor(ownerCtx, { createUserMessage: llm.createUserMessage, SessionId: sessions.SessionId, service, ...options }); } });
       return { executor, dispose: () => owner.dispose() };
     },
     async close() {

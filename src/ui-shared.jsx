@@ -9,7 +9,7 @@ export { request } from './api.js';
 
 const settingNames = { imageCacheMaxMB: '图片缓存总上限（MiB）', imageOriginalDays: '原图未使用保留天数', imageThumbnailDays: '缩略图未使用保留天数', imageCacheReserveMB: '磁盘预留空间（MiB）', includeClosed: '整理已关闭或已合并内容', fetchHours: '抓取间隔（小时）', organizeHours: '整理间隔（小时）', language: '摘要语言', decisionProfile: 'Jev 决策 profile', decisionConfidence: '决策概率阈值', decisionMargin: '决策概率差阈值', writerProvider: '生成 / 分析提供商', writerModel: '生成 / 分析模型', supervisorProvider: '监督提供商', supervisorModel: '监督模型', replyStyle: '回复风格', reviewFocus: 'PR 审查重点', learningGuidance: '全局学习指导' };
 const settingGroups = [
-  { title: '图片缓存容量与保留期限', keys: ['imageCacheMaxMB','imageOriginalDays','imageThumbnailDays','imageCacheReserveMB'], hint: '网页与下载缓存共享预算，临时下载也计入上限；DSH会话附件另随宿主历史保留。低于磁盘预留空间时停止新增缓存；图片链接随评论历史保留。' },
+  { title: '图片缓存容量与保留期限', keys: ['imageCacheMaxMB','imageOriginalDays','imageThumbnailDays','imageCacheReserveMB'], hint: '网页图片缓存共享预算，临时下载也计入上限；决策升级图片只在内存转发，不生成会话附件。低于磁盘预留空间时停止新增缓存；图片链接随评论历史保留。' },
   { title: 'GitHub 整理范围', keys: ['includeClosed'], hint: '始终采集全部状态。默认仅整理开放的 Issue 和 PR，Release 照常整理。开启后手动和自动整理也包含已关闭或已合并内容。' },
   { title: '抓取与整理频率', keys: ['fetchHours','organizeHours'], hint: '自动整理只处理新变化和需要更新的既有分析。手动整理已有数据也包含尚未分析的历史基线。' },
   { title: 'Jev · 轻量决策', keys: ['decisionProfile','decisionConfidence','decisionMargin'], hint: '评论先由 Jev 输出忽略、拟稿、人工介入的选项概率。普通模型的概率为自报估计，未经校准，阈值需用实际样本验证。选择默认项时使用 Jev 的默认 profile。此路线独立于生成模型。' },

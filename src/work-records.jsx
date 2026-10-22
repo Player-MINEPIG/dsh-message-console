@@ -14,5 +14,5 @@ export function WorkRecord({run,item,openSession}) {
 }
 function Decision({runId}) {
   const [expanded,setExpanded]=useState(false),resource=useRemoteResource(expanded?`runs/${encodeURIComponent(runId)}/decision`:null);
-  return <details open={expanded} onToggle={event=>setExpanded(event.currentTarget.open)}><summary>Jev 轻量决策 · 输入与输出</summary>{expanded&&<><ResourceError error={resource.error}/>{resource.data?<pre>{JSON.stringify(resource.data,null,2)}</pre>:!resource.error&&<p>正在加载 Jev 记录…</p>}</>}</details>;
+  return <details open={expanded} onToggle={event=>setExpanded(event.currentTarget.open)}><summary>Jev 与升级判断 · 输入与输出</summary>{expanded&&<><ResourceError error={resource.error}/>{resource.data?<pre>{JSON.stringify(resource.data,null,2)}</pre>:!resource.error&&<p>正在加载 Jev 记录…</p>}</>}</details>;
 }

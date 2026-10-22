@@ -104,3 +104,20 @@ test('quota accounts for allocated disk blocks and tiny files also have a count 
   assert.equal((await f.cache.stats()).usedBytes, allocated);
   assert.ok(allocated <= (await f.cache.stats()).maxBytes);
 });
+
+test('model reads stream into memory without new image files or index entries; browser originals can be reused', async t => {
+  const f = await fixture(t), before = await readdir(f.directory);
+  const result = await f.cache.readTransient(image('model'));
+  assert.deepEqual(result.body, png); assert.equal(f.calls, 1);
+  assert.deepEqual(await readdir(f.directory), before); assert.equal((await f.cache.stats()).files, 0);
+  await f.cache.get(image('shared'), 'original'); const calls = f.calls;
+  assert.deepEqual((await f.cache.readTransient(image('shared'))).body, png); assert.equal(f.calls, calls);
+  const controller = new AbortController(); controller.abort(new Error('cancelled'));
+  await assert.rejects(f.cache.readTransient(image('unused'), controller.signal), /cancelled/); assert.equal(f.calls, calls);
+  const files = await readdir(f.directory);
+  f.request(async () => new Response('not an image'));
+  await assert.rejects(f.cache.readTransient(image('invalid')));
+  f.request(async () => new Response(png, { headers: { 'content-length': String(11 * MB) } }));
+  await assert.rejects(f.cache.readTransient(image('large')), /上限/);
+  assert.deepEqual(await readdir(f.directory), files);
+});

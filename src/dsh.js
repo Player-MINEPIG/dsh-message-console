@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { WorkflowExecutor } from './executor.js';
 import { escalationImages } from './escalation-images.js';
+import { openMemoryImageModel } from './memory-image-model.js';
 import { queueConversationBackground, assertStorageOutsideWorkspace } from './agent-tools.js';
 
 function stagePreset(instructions,postHistoryInstruction) {
@@ -121,7 +122,12 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
     }
     return null;
   }
-  async function runAgent({ role, input, imageBlocks = [], instructions, provider, model, signal, onSession, title, workspaceId, postHistoryInstruction, runId, batchId, draftId }) {
+  async function runAgent(options) {
+    if (!options.transientImages) return runSession(options);
+    const memory = await openMemoryImageModel(ctx, { ...options, images: options.transientImages });
+    try { return { ...await runSession(options, memory), imageInput: memory.summary() }; } finally { await memory.close(); }
+  }
+  async function runSession({ role, input, instructions, provider, model, signal, onSession, title, workspaceId, postHistoryInstruction, runId, batchId, draftId }, memory) {
     signal?.throwIfAborted();
     const reused = await existingAnalysis({runId,role,workspaceId,provider,model});
     const created = reused ?? await create({ provider, model, instructions, title, onSession, workspaceId, postHistoryInstruction, runId, batchId, role, draftId });
@@ -132,7 +138,9 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
       if (ownedTurn === undefined) agent.inbox.remove(message.id);
       else agent.cancel({kind:'hook',reason:signal?.reason?.kind === 'owner-disposed' ? 'message-console owner disposed' : 'message-console signal cancelled'},{keepInbox:true});
     };
-    const message = createUserMessage({source:{kind:'dsh-message-console',form:'instructions',...(runId ? {runId} : {})},content:[{type:'text',text:serializeInput({role,input,...(['writer','review','investigate'].includes(role) && domain().analysisRoundContext ? {round:domain().analysisRoundContext(runId)} : {})})},...imageBlocks]});
+    const message = createUserMessage({source:{kind:'dsh-message-console',form:'instructions',...(runId ? {runId} : {})},content:[{type:'text',text:serializeInput({role,input,...(['writer','review','investigate'].includes(role) && domain().analysisRoundContext ? {round:domain().analysisRoundContext(runId)} : {})})}]});
+    const stopImages = memory ? ctx.on('llm/stream', (request, next) => request.sessionId === sessionId && !memory.isDispatch(request) ? memory.stream(request, message.id) : next()) : () => {};
+    const stopImageTools = memory ? agent.ctx.tools.guard(exec => ['run_code', 'dmc_read_item', 'dmc_submit_result'].includes(exec.name) ? undefined : '含图决策升级只读取已采集数据并提交判断，图片由请求临时注入，不允许下载文件或创建附件') : () => {};
     let ownedTurn, turnEnded = false, resolveEnd;
     const turnEnd = new Promise(resolve => { resolveEnd = resolve; });
     const stopEvent = agent.ctx.on('session/event',(_session,event)=>{
@@ -178,7 +186,7 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
       if (end?.data.reason.kind !== 'completed') throw sessionFailure(end?.data.reason,sessionId,{timeoutMs,elapsedMs:Date.now()-startedAt});
       return role === 'learning' ? domain().requireLearningSubmission(sessionId) : domain().requireSubmission(sessionId,runId);
     } finally {
-      clearTimeout(timer); stopEvent(); stopDiscard(); stopClaim(); routeStop?.(); signal?.removeEventListener('abort',cancelSignal);
+      clearTimeout(timer); stopImages(); stopImageTools(); stopEvent(); stopDiscard(); stopClaim(); routeStop?.(); signal?.removeEventListener('abort',cancelSignal);
       try { await ctx.sessions.flush(agent.session); } finally { domain().endSession(sessionId); }
     }
   }

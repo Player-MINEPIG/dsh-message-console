@@ -15,7 +15,7 @@ import { GitHubGhConnector } from './connectors/github-gh.js';
 import { installAgentTools } from './agent-tools.js';
 
 export const name = 'dsh-message-console';
-export const inject = ['workspaceRegistry', 'agents', 'agentLoop', 'agentPresets', 'permissionPresets', 'sandboxPolicy', 'sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'llm', 'decisionModels', 'dshPromptAssembler'];
+export const inject = ['loader', 'workspaceRegistry', 'agents', 'agentLoop', 'agentPresets', 'permissionPresets', 'sandboxPolicy', 'sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'llm', 'decisionModels', 'dshPromptAssembler'];
 export const Config = Schema.object({ storageDir: Schema.string().required(), cookieFile: Schema.string(), githubAuth: Schema.union(['gh', 'public']).default('gh'), autoSchedule: Schema.boolean().default(true), timeoutMs: Schema.number().min(1000).max(1800000).default(300000) });
 
 export async function apply(ctx, config) {

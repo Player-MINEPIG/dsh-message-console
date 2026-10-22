@@ -85,6 +85,38 @@ export class ImageCache {
       throw new Error('图片下载失败，未缓存或缓存已清理');
     } finally { await reader?.cancel().catch(() => {}); await output?.close(); this.#aborts.delete(controller); }
   }
+  readTransient(image, signal) {
+    let url; try { url = imageURL(image.url); } catch (error) { return Promise.reject(error); }
+    return this.#serial(async () => {
+      signal?.throwIfAborted();
+      await this.#sweep();
+      const key = createHash('sha256').update('original:' + url).digest('hex');
+      const cached = this.#db.prepare('SELECT * FROM images WHERE key=? AND bytes>0').get(key);
+      if (cached) {
+        const body = await readFile(this.#file(key)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+        signal?.throwIfAborted();
+        if (body) { this.#db.prepare('UPDATE images SET last_used=? WHERE key=?').run(this.clock(), key); return { body, mime: cached.mime }; }
+        await this.#remove(cached);
+      }
+      const controller = new AbortController(); this.#aborts.add(controller); let reader;
+      try {
+        const response = await this.request(url, { redirect: 'error', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000), ...(signal ? [signal] : [])]), headers: { Accept: 'image/*', Referer: 'https://www.bilibili.com/' } });
+        if (!response.ok || !response.body) throw new Error('原图不可用');
+        if (Number(response.headers.get('content-length')) > MAX_IMAGE) throw new Error('图片超过单张下载上限');
+        reader = response.body.getReader(); const chunks = []; let bytes = 0;
+        while (true) {
+          signal?.throwIfAborted(); const { value, done } = await reader.read(); if (done) break;
+          bytes += value.byteLength; if (bytes > MAX_IMAGE) throw new Error('图片超过单张下载上限');
+          chunks.push(value);
+        }
+        if (!bytes) throw new Error('图片内容为空');
+        const body = Buffer.concat(chunks), metadata = await decode(body).metadata();
+        if (!formats[metadata.format] || !metadata.width || !metadata.height || metadata.width * metadata.height > 40e6) throw new Error('图片格式不支持或尺寸过大');
+        signal?.throwIfAborted();
+        return { body, mime: formats[metadata.format] };
+      } finally { await reader?.cancel().catch(() => {}); this.#aborts.delete(controller); }
+    });
+  }
   get(image, variant = 'thumbnail') {
     if (!['thumbnail', 'original'].includes(variant)) return Promise.reject(new Error('图片规格无效'));
     let url; try { url = imageURL(image.url); } catch (error) { return Promise.reject(error); }

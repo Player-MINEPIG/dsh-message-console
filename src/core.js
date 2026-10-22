@@ -30,6 +30,9 @@ class ConsoleService {
   image(id, query) {
     return required(this.imageCache, '图片缓存').get(this.store.image(id, query), query.variant ?? 'thumbnail');
   }
+  imageForModel(id, query, signal) {
+    return required(this.imageCache, '图片缓存').readTransient(this.store.image(id, query), signal);
+  }
   imageCacheStatus() { return required(this.imageCache, '图片缓存').stats(); }
   clearImageCache() { return required(this.imageCache, '图片缓存').clear(); }
   storageDirectory() {
