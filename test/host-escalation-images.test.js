@@ -18,7 +18,7 @@ function imageBlocks(value) {
   return [...(value.type === 'image' && value.attachment ? [value] : []), ...Object.values(value).flatMap(child => typeof child === 'object' ? imageBlocks(child) : [])];
 }
 
-test('real DSH PTC sends image bytes on the provider wire but persists only metadata; cold resume and unrelated requests retain no images', { skip: !root, timeout: 30000 }, async () => {
+for (const withEditor of [false, true]) test(`real DSH nested model owner uses ${withEditor ? 'profile directory' : 'root loader'}; wire images never persist or leak to other requests`, { skip: !root, timeout: 30000 }, async () => {
   const f = await hostFixture(root), { ctx, load, registeredWorkspace } = f;
   const directory = await mkdtemp(join(resolve('.local'), 'host-memory-image-')), store = await new Store(directory).start();
   let service, jevCalls = 0; const requests = [], errors = [];
@@ -49,7 +49,15 @@ test('real DSH PTC sends image bytes on the provider wire but persists only meta
     const originalAttachments = ctx.attachments;
     const { createLaunchEnvironmentSnapshot } = await load('dsh-launch-environment');
     ctx.provide('launchEnvironment', createLaunchEnvironmentSnapshot([{ source: 'process', values: { DMC_IMAGE_TEST_KEY: 'synthetic-key' } }]));
-    await ctx.loader.create({ name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: { 'visual-fixture': { api: 'openai-completions', baseURL: `http://127.0.0.1:${server.address().port}/v1`, apiKeyEnv: 'DMC_IMAGE_TEST_KEY', models: [{ id: 'vision-model', name: 'Fixture vision', input: ['text', 'image'] }] } } } });
+    await ctx.loader.create({ id: 'include', name: '@deepseek-ai/cordis-plugin-loader', isolate: { loader: true }, config: { baseUrl: ctx.baseUrl } });
+    const modelTree = ctx.loader.resolve('include').subtree;
+    await modelTree.create({ id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: { 'visual-fixture': { api: 'openai-completions', baseURL: `http://127.0.0.1:${server.address().port}/v1`, apiKeyEnv: 'DMC_IMAGE_TEST_KEY', models: [{ id: 'vision-model', name: 'Fixture vision', input: ['text', 'image'] }] } } } });
+    assert.throws(() => ctx.loader.resolve('llm-pi-ai'), /cannot resolve entry/);
+    if (withEditor) {
+      ctx.provide('profileContext', { patchPath: join(directory, 'unused.patch.yml') });
+      await ctx.plugin((await load('dsh-config-editor')).default);
+      assert.equal(ctx.configEditor.entries().some(entry => entry.options.id === 'llm-pi-ai'), true);
+    }
     const providers = ctx.llm.listProviders();
     ctx.provide('decisionModels', { async ask(request) { jevCalls++; assert.equal(request.images, undefined); return { answers: { reply: { probabilities: { ignore: 1, draft: 0, human: 0 } } } }; } });
     const image = await sharp({ create: { width: 36, height: 24, channels: 3, background: 'red' } }).png().toBuffer();

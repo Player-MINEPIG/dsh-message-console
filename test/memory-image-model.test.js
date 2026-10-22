@@ -21,3 +21,9 @@ test('unsupported routes fail explicitly before any model request or persistent 
   const ctx = { llm: { listConfigurableProviders: () => [] } };
   await assert.rejects(openMemoryImageModel(ctx, { provider: 'unknown', model: 'm', images: [image] }), /不支持内存图片转发/);
 });
+
+test('ambiguous profile owners refuse to select another model configuration', async () => {
+  const entry = { id: 'include:llm-pi-ai', options: { id: 'llm-pi-ai' }, fiber: { config: { providers: { get: () => ({ selected: {} }) } } }, moduleNamespace: { PiAiAdapter: class {} } };
+  const ctx = { llm: { listConfigurableProviders: () => [{ provider: 'selected', settingsNs: 'llm-pi-ai' }] }, get: () => ({ entries: () => [entry, { ...entry, id: 'other:llm-pi-ai' }] }) };
+  await assert.rejects(openMemoryImageModel(ctx, { provider: 'selected', model: 'm', images: [image] }), /多个生效配置/);
+});

@@ -38,7 +38,10 @@ export function memoryImageStore(images, onProjection = () => {}) {
 export async function openMemoryImageModel(ctx, { provider, model, images, signal }) {
   signal?.throwIfAborted();
   const route = ctx.llm.listConfigurableProviders().find(entry => entry.provider === provider);
-  const entry = route && ctx.loader?.resolve(route.settingsNs);
+  const entries = ctx.get?.('configEditor')?.entries() ?? [...(ctx.root?.get('loader')?.entries() ?? [])];
+  const matches = route ? entries.filter(entry => (entry.options.id === route.settingsNs || entry.id === route.settingsNs) && entry.fiber && entry.moduleNamespace?.PiAiAdapter && entry.fiber.config.providers?.get?.()?.[provider]) : [];
+  if (matches.length !== 1) throw new ImageInputError(matches.length > 1 ? '所选模型对应多个生效配置，无法确定图片转发路线，请检查宿主模型配置。' : '当前模型路线不支持内存图片转发，或未找到所选模型的生效配置。');
+  const entry = matches[0];
   const module = entry?.moduleNamespace;
   if (!entry?.fiber || !module?.PiAiAdapter || !module?.apply || !module?.Config) throw new ImageInputError('当前模型路线不支持内存图片转发，请使用宿主 pi-ai 模型路线。');
   const configured = entry.fiber.config.providers.get()[provider];
@@ -46,7 +49,7 @@ export async function openMemoryImageModel(ctx, { provider, model, images, signa
   const projections = new Map(), profile = structuredClone(configured), store = memoryImageStore(images, (id, info) => projections.set(id, info));
   let llm, owner;
   try {
-    const namespace = await ctx.loader.import('@deepseek-ai/dsh-llm');
+    const namespace = await entry.parent.tree.import('@deepseek-ai/dsh-llm');
     const Runtime = namespace.default;
     const scope = ctx.isolate('llm').isolate('attachments').isolate('settings').isolate('authorization');
     owner = await scope.plugin({ async apply(child) {
