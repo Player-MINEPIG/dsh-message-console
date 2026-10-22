@@ -1,6 +1,6 @@
 {
   "name": "dsh-message-console",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "看点什么 — a personal source and message console for DeepSeek Harness",
   "type": "module",
   "license": "MIT",
