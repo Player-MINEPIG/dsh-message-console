@@ -6,7 +6,7 @@ export class CookieAuthenticationError extends Error {
 }
 export class CookieTransport {
   constructor({cookieFile, request=fetch, intervalMs=1200}) { Object.assign(this,{cookieFile,request,intervalMs}); this.tail=Promise.resolve(); this.last=0; this.identities={}; }
-  status(platform) { return {ready:Boolean(this.cookieFile),canPublish:false,identity:this.identities[platform]??null,reason:this.cookieFile?'Chrome Cookie · 只读采集':'尚未导入 Chrome Cookie'}; }
+  status(platform) { const canPublish=platform==='bilibili'&&Boolean(this.cookieFile)&&typeof this.postComment==='function';return {ready:Boolean(this.cookieFile),canPublish,identity:this.identities[platform]??null,reason:this.cookieFile?(canPublish?'Chrome Cookie · 支持评论发布':'Chrome Cookie · 只读采集'):'尚未导入 Chrome Cookie'}; }
   async get(platform, url, {signal,accept='application/json',anonymous=false}={}) {
     const parsed=new URL(url);
     if(parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.port||!HOSTS[platform]?.has(parsed.hostname))throw new Error('拒绝向非平台地址发送Cookie');
@@ -47,6 +47,50 @@ export class CookieTransport {
       return response;
     };
     const result=this.tail.catch(()=>{}).then(work);this.tail=result.catch(()=>{});return result;
+  }
+  async postComment(params,{signal}={}) {
+    let sent=false;
+    const work=async()=>{
+      for(const key of ['oid','root','parent'])if(typeof params?.[key]!=='string'||!/^[1-9]\d*$/.test(params[key]))throw new Error('B站评论目标无效');
+      if(typeof params.message!=='string'||!params.message.trim()||[...params.message].length>1000)throw new Error('B站评论内容必须为1至1000字');
+      if(!this.cookieFile)throw new CookieAuthenticationError('请先导入Chrome Cookie');
+      let rows;
+      try{
+        const info=await stat(this.cookieFile);
+        if(process.platform!=='win32'&&(info.mode&0o077))throw new Error();
+        const saved=JSON.parse(await readFile(this.cookieFile,'utf8'));
+        rows=(saved.platforms?.bilibili??[]).filter(row=>{
+          const domain=String(row.domain??'').replace(/^\./,'');
+          const path='/x/v2/reply/add';
+          return (domain==='api.bilibili.com'||row.domain==='.bilibili.com')&&typeof row.path==='string'&&(path===row.path||path.startsWith(row.path.endsWith('/')?row.path:row.path+'/'))&&(!row.expires||row.expires>Date.now()/1000);
+        });
+      }catch{throw new CookieAuthenticationError('无法读取受保护的Cookie文件，请重新导入（仅当前用户可读，0600）');}
+      const credentials={};
+      for(const name of ['SESSDATA','bili_jct']){
+        const matches=rows.filter(row=>row.name===name);
+        if(matches.length!==1||typeof matches[0].value!=='string'||!matches[0].value||/[;\r\n]/.test(matches[0].value))throw new CookieAuthenticationError('登录或CSRF Cookie缺失、重复或已过期，请重新导入');
+        credentials[name]=matches[0].value;
+      }
+      const body=new URLSearchParams({type:'1',oid:params.oid,root:params.root,parent:params.parent,message:params.message,plat:'1',csrf:credentials.bili_jct}).toString();
+      const delay=Math.max(0,this.last+this.intervalMs-Date.now());
+      if(delay)await new Promise(resolve=>setTimeout(resolve,delay));
+      signal?.throwIfAborted();
+      const options={method:'POST',redirect:'manual',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(30000)]):AbortSignal.timeout(30000),headers:{Cookie:`SESSDATA=${credentials.SESSDATA}; bili_jct=${credentials.bili_jct}`,Accept:'application/json','Content-Type':'application/x-www-form-urlencoded','User-Agent':'Mozilla/5.0',Referer:'https://www.bilibili.com/',Origin:'https://www.bilibili.com'},body};
+      this.last=Date.now();sent=true;
+      let response;
+      try{response=await this.request('https://api.bilibili.com/x/v2/reply/add',options);}catch{throw new Error('B站评论发送结果不明（请求失败或超时），请核实远端，勿重复发送');}
+      if(!response.ok)throw new Error(`B站评论发送结果不明（HTTP ${response.status}），请核实远端，勿重复发送`);
+      let result;
+      try{result=await response.json();}catch{throw new Error('B站评论发送结果不明（无有效JSON），请核实远端，勿重复发送');}
+      if(!Number.isInteger(result?.code))throw new Error('B站评论发送结果不明（缺少平台状态码），请核实远端');
+      if(result.code!==0){const error=new Error(`B站拒绝发送评论（code ${result.code}）${result.code===12015?'，请人工完成验证码':''}`);error.definitelyNotSent=true;throw error;}
+      return result.data;
+    };
+    const result=this.tail.catch(()=>{}).then(work).catch(error=>{
+      if(!sent){const failure=new Error(error instanceof CookieAuthenticationError?error.message:'B站评论尚未发送，请检查目标、内容、Cookie权限或取消状态');failure.code=error.code;failure.definitelyNotSent=true;throw failure;}
+      throw error;
+    });
+    this.tail=result.catch(()=>{});return result;
   }
   async json(platform,url,options) {
     const response=await this.get(platform,url,options);let result;
