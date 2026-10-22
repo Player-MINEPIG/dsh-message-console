@@ -288,3 +288,13 @@ DSH 运行器等待该真实消息所属 session/turn 的 `turn/end` 并 flush �
 `agent/inbox/claimed` 将真实消息关联到 turn，路由钩子按 turn 采用本轮模型，后续用户轮恢复原路由。`session/event` 只结算该 session/turn 的 turn/end；discard 与宿主 idle 提供未接受消息/异常缺日志的失败兜底。计时器只取消仍执行的目标轮，不影响后续用户轮。超时保留 TIMEOUT、时限和真实 hook 原因，外部信号及宿主取消另记。
 
 工作列表的 submission 是 indexed receipt/audit 只读投影，优先正式分析，不被同 run 的监督收据覆盖。原 failed/interrupted 和 finishedAt 不因后补交而改成 completed；结果保存时间、当时采纳与草稿当前监督状态独立展示。同步草稿监督仍沿原 executor 路径。
+
+## 按来源授权的评论发布
+
+`src/publication.js` 定义自动回复的固定身份前缀、独立审查规则和目标检查。来源 `autoReply` 位于普通默认值之外，新来源默认关闭，学习白名单不包含该字段。Jev 同时输出回复方式和独立重要程度。工作流保存 `decision.resolved`，升级仍不确定时不能获得自动发送资格。
+
+自动草稿在入库前固定身份标识与目标，监督检查这份最终正文；工具收据只包含JSON可编码的字段。当前整理轮结束后只对本轮返回的有效新草稿检查自动发送，不扫描历史待审核草稿。平台连接器的 `beforeSend` 同步回调在队列和限流等待之后、实际POST之前复核当前来源revision、启用和授权、内容版本、分析revision、草稿状态与正文指纹。数据库claim在短事务中拒绝相同目标的既有sent/sending/unknown记录。
+
+B站根评论作者以 `rootAuthorId` 身份元数据保存在内容项当前状态中，不进入内容指纹；补采这项身份不会改写不可变历史或制造内容变化。发送仍重取平台正文与讨论校验原版本，成功回执记录准确根楼、父评论和远端ID。
+
+学习允许修改当前来源的 `settings.learningGuidance/language/replyStyle/reviewFocus` 与对应默认文字项。默认变更只使仍继承该字段且适用的来源旧草稿失效，现有分析和候选范围保留。实际生效语言、回复风格、PR审查重点以及自动回复授权参与输入contextVersion，防止旧规则的草稿通过版本检查。

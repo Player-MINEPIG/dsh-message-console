@@ -4,9 +4,10 @@ import { prepareSource, postHistoryText } from "./source-context.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { realpath } from "node:fs/promises";
-import { validateSource, validateSettings, resolveSettings, valuesOf, PARAMETERS } from "./config.js";
+import { validateSource, validateSettings, resolveSettings, valuesOf, PARAMETERS, processingSettingsOf } from "./config.js";
 import { suggestionTarget, metadataSuggestions } from "./source-suggestions.js";
 import { conclusion } from './change-reason.js';
+import { automaticReplyProblem, replyTarget } from "./publication.js";
 const fingerprint = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const nowISO = (clock) => new Date(clock()).toISOString();
 const required = (value, label) => {
@@ -14,6 +15,7 @@ const required = (value, label) => {
   return value;
 };
 const errorText = (error) => String(error?.publicMessage ?? error?.message ?? error).slice(0, 1e3);
+const connectorIdentity = connector => connector?.status?.().identity?.id ?? null;
 const roles = ["writer", "review", "investigate", "decision-escalation", "supervisor", "human"];
 const analysisRoles = ["writer", "review", "investigate"];
 function validateAnalysis(a) {
@@ -127,7 +129,8 @@ class ConsoleService {
   }
   async #prepare(source, workspace, settings = this.store.settings()) {
     const learningGuidance = valuesOf(resolveSettings(settings, source)).learningGuidance ?? "";
-    return prepareSource({ ...source, learningGuidance }, workspace ?? await this.workspaces.resolve(source.workspaceId), { learningGuidance });
+    const processingSettings = processingSettingsOf(settings, source);
+    return prepareSource({ ...source, learningGuidance }, workspace ?? await this.workspaces.resolve(source.workspaceId), { learningGuidance, processingSettings });
   }
   markAllRead({ sourceId } = {}) {
     if (sourceId !== void 0 && (typeof sourceId !== "string" || !sourceId)) throw new Error("来源ID无效");
@@ -196,14 +199,15 @@ class ConsoleService {
         { section: "configuration", target: "source", field: "textMaterial", materialName: "资料名称" },
       ],
     };
-    if (section === "batch") return { id: batch.id, sourceId: batch.sourceId, workspaceId: batch.workspaceId, caseCount: batch.caseCount, remainingCount: batch.remainingCount, source: { id: batch.sourceId, name: batch.sourceSnapshot.name, platform: batch.sourceSnapshot.platform, target: batch.sourceSnapshot.target, materials: (batch.sourceSnapshot.materials ?? []).map(({ name, kind }) => ({ name, kind })) }, ...configuration, proposal: batch.proposal ? { revision: batch.proposal.revision, hash: batch.proposal.hash, status: batch.proposal.status } : null };
+    if (section === "batch") return { id: batch.id, sourceId: batch.sourceId, workspaceId: batch.workspaceId, caseCount: batch.caseCount, remainingCount: batch.remainingCount, scopeNote: "source 只修改当前来源；global 修改默认配置，新来源和仍继承该字段的现有来源跟随。授权、模型和凭据不允许通过学习修改。", source: { id: batch.sourceId, name: batch.sourceSnapshot.name, platform: batch.sourceSnapshot.platform, target: batch.sourceSnapshot.target, materials: (batch.sourceSnapshot.materials ?? []).map(({ name, kind }) => ({ name, kind })) }, ...configuration, proposal: batch.proposal ? { revision: batch.proposal.revision, hash: batch.proposal.hash, status: batch.proposal.status } : null };
     if (["configuration", "context", "materials"].includes(section)) {
       let text;
       if (section === "configuration") {
-        if (args.target !== undefined && !Object.hasOwn(learningConfigurationFields, args.target)) throw new Error("配置查询目标无效；target 仅允许 source 或 global，global 仅允许 field=learningGuidance");
+        if (args.target !== undefined && !Object.hasOwn(learningConfigurationFields, args.target)) throw new Error("配置查询目标无效；target 仅允许 source 或 global，global 为默认文字配置");
         if (args.field === undefined) return args.target === undefined ? configuration : { target: args.target, fields: learningConfigurationFields[args.target], examples: configuration.examples.filter(example => example.target === args.target) };
-        if (!learningConfigurationFields[args.target]?.includes(args.field)) throw new Error(`配置查询字段或目标无效；source 允许 ${learningConfigurationFields.source.join(", ")}；global 仅允许 learningGuidance，例如 {section:"configuration",target:"global",field:"learningGuidance"}`);
-        if (args.target === "global" && args.field === "learningGuidance") text = batch.settingsSnapshot.learningGuidance ?? "";
+        if (!learningConfigurationFields[args.target]?.includes(args.field)) throw new Error(`配置查询字段或目标无效；source 允许 ${learningConfigurationFields.source.join(", ")}；global 允许 ${learningConfigurationFields.global.join(", ")}，例如 {section:"configuration",target:"global",field:"learningGuidance"}`);
+        if (args.target === "global") text = batch.settingsSnapshot[args.field] ?? PARAMETERS[args.field]?.default ?? "";
+        else if (args.field.startsWith("settings.")) text = batch.sourceSnapshot.settings?.[args.field.slice(9)] ?? batch.effectiveSettings?.[args.field.slice(9)] ?? PARAMETERS[args.field.slice(9)]?.default ?? "";
         else if (["context", "attentionRules"].includes(args.field)) text = batch.sourceSnapshot[args.field] ?? "";
         else if (/^stageContexts\.(decision|escalation|generation|supervision)\.context$/.test(args.field ?? "")) text = batch.sourceSnapshot.stageContexts?.[args.field.split(".")[1]]?.context ?? "";
         else if (args.field === "textMaterial") text = (batch.sourceSnapshot.materials ?? []).find(material => material.kind === "text" && material.name === args.materialName)?.text ?? "";
@@ -346,7 +350,7 @@ class ConsoleService {
       this.#aborts.add(controller);
       try {
         if (preparationError) throw preparationError;
-        const result = await this.executor.analyze({ runId: run.id, source: prepared, item, settings, signal: controller.signal, recordSession: async (role, sessionId) => {
+        const result = await this.executor.analyze({ runId: run.id, source: { ...prepared, replyAccountId: connectorIdentity(this.connectors[source.platform]) }, item, settings, signal: controller.signal, recordSession: async (role, sessionId) => {
           if (!this.store.sessionBinding(sessionId)) {
             const workspace = await this.workspaces.resolve(source.workspaceId);
             this.bindSession({ sessionId, runId: run.id, role, workspaceId: source.workspaceId, cwd: workspace.path });
@@ -365,7 +369,10 @@ class ConsoleService {
           if (!applied) this.store.updateRun(run.id, { result, resultAdopted: false });
         }
         this.store.updateRun(run.id, { status: applied ? "completed" : "stale", processing: result.processing ?? null, finishedAt: nowISO(this.clock) });
-        if (applied) summary.completed++;
+        if (applied) {
+          summary.completed++;
+          if (result.draftId) await this.#autoPublish(result.draftId, controller.signal);
+        }
       } catch (error) {
         summary.failed++;
         if (summary.errors.length < 50) summary.errors.push({ itemId: item.id, title: item.title, message: errorText(error), ...error.sessionFailure ? { sessionId: error.sessionFailure.sessionId } : {} });
@@ -473,7 +480,14 @@ class ConsoleService {
     }
     if (submission.kind === "draft" && (typeof submission.body !== "string" || !submission.body.trim())) throw new Error("草稿正文不能为空");
     if (submission.kind === "decision" && (!["ignore", "draft", "human"].includes(submission.choice) || typeof submission.certain !== "boolean" || typeof submission.reason !== "string")) throw new Error("升级判断格式无效");
+    if (submission.kind === "decision" && submission.importance !== undefined && (!Number.isInteger(submission.importance) || submission.importance < 0 || submission.importance > 3)) throw new Error("升级重要程度无效");
     if (submission.kind === "supervision" && (typeof submission.approved !== "boolean" || typeof submission.reason !== "string" || !submission.reason.trim())) throw new Error("监督结果无效");
+    if (submission.replyToCommentId !== undefined) {
+      const item = this.store.item(run.itemId);
+      if (item.kind !== "comment") throw new Error("仅评论可指定回复目标");
+      replyTarget(item, submission.replyToCommentId);
+    }
+    if (submission.kind === "analysis" && submission.draftBody?.trim() && this.store.source(run.sourceId)?.autoReply === true && this.store.item(run.itemId)?.kind === "comment" && !submission.replyToCommentId) throw new Error("自动回复草稿需要 replyToCommentId 指定目标评论");
     if (JSON.stringify(submission).length > 2e5) throw new Error("提交结果过大");
     assertWritable?.();
     const replay = this.store.replaySubmission(binding.sessionId, submission,binding.runId);
@@ -626,7 +640,17 @@ class ConsoleService {
     if (!["pending-supervision", "ready", "blocked", "stale"].includes(draft.status)) throw new Error("当前状态不能暂不发布");
     this.store.updateDraft(id, { status: "dismissed" });
   }
-  async approveAndPublish(id, { version, bodyHash }) {
+  async #autoPublish(id, signal) {
+    const draft = this.store.draft(id);
+    if (!draft || draft.status !== "ready") return;
+    const item = this.store.item(draft.itemId), source = this.store.source(draft.sourceId), run = this.store.run(draft.runId);
+    const problem = automaticReplyProblem({ source, item, draft, run, ownId: this.connectors[source.platform]?.status?.().identity?.id });
+    if (problem) { this.store.updateDraft(id, { automaticError: problem }); return; }
+    try { await this.#publish(id, { version: draft.version, bodyHash: draft.bodyHash }, { automatic: true, signal }); }
+    catch (error) { this.store.updateDraft(id, { automaticError: errorText(error) }); }
+  }
+  approveAndPublish(id, expected) { return this.#publish(id, expected); }
+  async #publish(id, { version, bodyHash }, { automatic = false, signal } = {}) {
     return this.#job(`publish:${id}`, async () => {
       const draft = required(this.store.draft(id), "草稿"), item = required(this.store.item(draft.itemId), "内容项"), source = required(this.store.source(draft.sourceId), "来源"), prepared = await this.#prepare(source);
       if (draft.contextVersion !== prepared.contextVersion) throw new Error("来源资料已变化，请重新整理并审核");
@@ -640,9 +664,25 @@ class ConsoleService {
         this.store.updateDraft(id, { status: "stale" });
         throw new Error("原始内容有新变化，请刷新并重新分析后审核");
       }
-      this.store.claimPublication(id, { version, bodyHash, contextVersion: prepared.contextVersion }, nowISO(this.clock));
+      signal?.throwIfAborted();
+      const latestSource = required(this.store.source(source.id), "来源"), latestPrepared = await this.#prepare(latestSource);
+      if (latestPrepared.contextVersion !== prepared.contextVersion || latestSource.enabled === false) throw new Error("来源规则或授权已变化，请重新审核");
+      if (automatic) {
+        const problem = automaticReplyProblem({ source: latestSource, item, draft, run: this.store.run(draft.runId), ownId: connector.status?.().identity?.id });
+        if (problem) throw new Error(problem);
+      }
+      this.store.claimPublication(id, { version, bodyHash, contextVersion: prepared.contextVersion, automatic }, nowISO(this.clock));
       try {
-        const receipt = await connector.publish(source, item, draft, { actionId: id });
+        const beforeSend = () => {
+          signal?.throwIfAborted();
+          const finalSource = required(this.store.source(source.id), "来源"), finalItem = required(this.store.item(item.id), "内容项"), finalDraft = required(this.store.draft(id), "草稿");
+          if (finalSource.revision !== latestSource.revision || !finalSource.enabled || finalItem.version !== item.version || finalItem.analysisRevision !== item.analysisRevision || finalDraft.status !== "sending" || finalDraft.bodyHash !== bodyHash) throw new Error("排队期间来源授权、内容或分析已变化，尚未发送");
+          if (automatic) {
+            const problem = automaticReplyProblem({ source: finalSource, item: finalItem, draft: finalDraft, run: this.store.run(draft.runId), ownId: connectorIdentity(connector) });
+            if (problem) throw new Error(problem);
+          }
+        };
+        const receipt = await connector.publish(source, item, draft, { actionId: id, signal, beforeSend });
         if (!receipt?.remoteId) throw new Error("发布缺少可核验回执");
         this.store.finishPublication(id, { status: "sent", receipt, sentAt: nowISO(this.clock) }, "publication.sent", { remoteId: receipt.remoteId }, nowISO(this.clock));
         return receipt;

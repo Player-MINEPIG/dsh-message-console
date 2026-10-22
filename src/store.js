@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { learningHash, proposalChanges } from "./learning.js";
+import { PARAMETERS, applies } from "./config.js";
+import { AUTO_REPLY_PREFIX, disclosedReply } from "./publication.js";
 import { itemPriority, currentAnalysis, needsHandling } from "./dashboard.js";
 import { conclusion } from './change-reason.js';
 const json = (value) => JSON.stringify(value ?? null);
@@ -256,7 +258,7 @@ class Store {
     return this.#transaction(() => {
       const old = this.settings();
       this.#run("UPDATE meta SET value=? WHERE key='settings'", json(settings));
-      if ((old.learningGuidance ?? "") !== (settings.learningGuidance ?? "")) this.#invalidateGlobalGuidance(settings);
+      this.#invalidateDefaults(old, settings);
     });
   }
   source(id) {
@@ -277,9 +279,10 @@ class Store {
       return saved;
     });
   }
-  #invalidateGlobalGuidance(settings) {
-    for (const source of this.sources()) if (!Object.hasOwn(source.settings ?? {}, "learningGuidance")) {
-      this.#run("UPDATE sources SET data=? WHERE id=?", json({ ...source, revision: (source.revision ?? 0) + 1, contextVersion: learningHash({ previous: source.contextVersion, learningGuidance: settings.learningGuidance ?? "" }) }), source.id);
+  #invalidateDefaults(previous, settings) {
+    const changed = ["learningGuidance", "language", "replyStyle", "reviewFocus"].filter(key => (previous[key] ?? PARAMETERS[key].default) !== (settings[key] ?? PARAMETERS[key].default));
+    for (const source of this.sources()) if (changed.some(key => applies(PARAMETERS[key], source) && !Object.hasOwn(source.settings ?? {}, key))) {
+      this.#run("UPDATE sources SET data=? WHERE id=?", json({ ...source, revision: (source.revision ?? 0) + 1, contextVersion: learningHash({ previous: source.contextVersion, defaults: settings }) }), source.id);
       this.#invalidateSource(source.id);
     }
   }
@@ -350,7 +353,9 @@ class Store {
         const id = old?.id ?? `${sourceId}:${entry.remoteId}`, version = fingerprint({ title: entry.title, body: entry.body, payload: entry.payload });
         const updatedAt = remoteTime(entry.updatedAt) ?? remoteTime(entry.payload?.updatedAt) ?? remoteTime(entry.payload?.publishedAt);
         if (old?.version === version) {
-          if (updatedAt && parse(old.data).updatedAt !== updatedAt) this.#run("UPDATE items SET data=? WHERE id=?", json({ ...parse(old.data), updatedAt }), id);
+          const data = parse(old.data);
+          const identity = source.platform === 'bilibili' && typeof entry.rootAuthorId === 'string' && entry.rootAuthorId ? { rootAuthorId: entry.rootAuthorId } : {};
+          if (updatedAt && data.updatedAt !== updatedAt || identity.rootAuthorId && identity.rootAuthorId !== data.rootAuthorId) this.#run("UPDATE items SET data=? WHERE id=?", json({ ...data, ...(updatedAt ? { updatedAt } : {}), ...identity }), id);
           continue;
         }
         const item = { ...old ? this.#itemState(old) : {}, ...entry, updatedAt, remoteId: old?.remote_id ?? entry.remoteId, id, sourceId, version, previous: old ? { version: old.version } : null, readVersion: old?.read_version ?? (!source.initialized ? version : null), analyzedVersion: old?.analyzed_version ?? (!source.initialized ? version : null), handling: old?.handling ?? "none", changedAt: at };
@@ -749,47 +754,57 @@ class Store {
       receipt.adopted = fresh && this.#adopt(run, receipt.result);
       receipt.analysisId = receipt.id;
       this.#writeRun({ ...run, resultAdopted: receipt.adopted, result: receipt.result });
-      if (item.kind !== "release" && submission.analysis.intervention !== "human" && submission.draftBody?.trim()) receipt.draft = this.#newDraft(run, submission.draftBody, receipt.adopted ? "pending-supervision" : "stale", at);
+      if (item.kind !== "release" && submission.analysis.intervention !== "human" && submission.draftBody?.trim()) receipt.draft = this.#newDraft(run, submission.draftBody, receipt.adopted ? "pending-supervision" : "stale", at, submission.replyToCommentId);
     } else if (submission.kind === "draft") {
       if (submission.replacesDraftId) {
         const old = required(this.draft(submission.replacesDraftId), "旧草稿");
         if (old.itemId !== run.itemId || old.bodyHash !== submission.bodyHash || !["pending-supervision", "ready", "blocked", "stale"].includes(old.status)) throw new Error("旧草稿已变化或不能改稿");
         this.#updateDraft(old.id, { status: "superseded" });
       }
-      receipt.draft = this.#newDraft(run, submission.body, fresh ? "pending-supervision" : "stale", at);
+      receipt.draft = this.#newDraft(run, submission.body, fresh ? "pending-supervision" : "stale", at, submission.replyToCommentId);
       receipt.result = receipt.draft;
     } else if (submission.kind === "decision") {
-      receipt.result = { choice: submission.choice, certain: submission.certain, reason: submission.reason };
+      receipt.result = { choice: submission.choice, certain: submission.certain, reason: submission.reason, ...(submission.importance !== undefined ? { importance: submission.importance } : {}) };
     } else if (submission.kind === "supervision") {
       const draft = required(this.draft(binding.draftId), "草稿");
       if (draft.runId !== run.id || draft.bodyHash !== binding.bodyHash || !["pending-supervision", "ready", "blocked"].includes(draft.status)) throw new Error("监督目标草稿已变化");
-      receipt.result = { approved: submission.approved, reason: submission.reason };
-      this.#updateDraft(draft.id, { supervision: { ...receipt.result, sessionId: binding.sessionId, at }, status: fresh && draft.contextVersion === currentContext ? submission.approved ? "ready" : "blocked" : "stale" });
+      const missingDisclosure = draft.automatic && !draft.body.startsWith(AUTO_REPLY_PREFIX);
+      receipt.result = { approved: submission.approved && !missingDisclosure, reason: missingDisclosure ? "自动回复缺少开头身份标识；" + submission.reason : submission.reason, ...(missingDisclosure ? { modelApproved: submission.approved } : {}) };
+      this.#updateDraft(draft.id, { supervision: { ...receipt.result, sessionId: binding.sessionId, at }, status: fresh && draft.contextVersion === currentContext ? receipt.result.approved ? "ready" : "blocked" : "stale" });
       receipt.draft = this.draft(draft.id);
     } else throw new Error("提交类型无效");
     if (receipt.draft) {
       receipt.draftId = receipt.draft.id;
-      receipt.draft = { id: receipt.draft.id, body: receipt.draft.body, bodyHash: receipt.draft.bodyHash, status: receipt.draft.status };
+      receipt.draft = { id: receipt.draft.id, body: receipt.draft.body, bodyHash: receipt.draft.bodyHash, status: receipt.draft.status, ...(receipt.draft.replyToCommentId ? { replyToCommentId: receipt.draft.replyToCommentId } : {}), ...(receipt.draft.automatic !== undefined ? { automatic: receipt.draft.automatic } : {}) };
     }
     this.#run("INSERT INTO receipts VALUES(?,?,?,?,?)", receipt.id, binding.sessionId, this.#operationKey(binding,submission), hash, json(receipt));
     this.#audit("tool.result.saved", { sessionId: binding.sessionId, callId, runId: run.id, receiptId: receipt.id, kind: submission.kind }, at);
     return receipt;
   }
-  #newDraft(run, body, status, at) {
-    const draft = { id: randomUUID(), itemId: run.itemId, sourceId: run.sourceId, runId: run.id, version: run.version, contextVersion: run.contextVersion, body, kind: this.#itemRow(run.itemId).kind === "pr" ? "review" : "reply", status, createdAt: at, supervision: null };
+  #newDraft(run, body, status, at, replyToCommentId) {
+    const automatic = run.kind === "automatic" && this.source(run.sourceId).autoReply === true && this.#itemRow(run.itemId).kind === "comment";
+    if (automatic) body = disclosedReply(body);
+    const draft = { id: randomUUID(), itemId: run.itemId, sourceId: run.sourceId, runId: run.id, version: run.version, contextVersion: run.contextVersion, body, automatic, ...(replyToCommentId ? { replyToCommentId } : {}), kind: this.#itemRow(run.itemId).kind === "pr" ? "review" : "reply", status, createdAt: at, supervision: null };
     this.#writeDraft(draft);
     this.#project(run.itemId);
     return this.draft(draft.id);
   }
-  claimPublication(id, { version, bodyHash, contextVersion }, at) {
+  claimPublication(id, { version, bodyHash, contextVersion, automatic = false }, at) {
     return this.#transaction(() => {
       const draft = required(this.draft(id), "草稿"), item = required(this.#itemRow(draft.itemId), "内容项");
       if (draft.status !== "ready" || !draft.supervision?.approved || item.version !== draft.version || version !== draft.version || draft.bodyHash !== bodyHash || draft.contextVersion !== contextVersion) throw new Error("草稿状态或内容已变化，请重新审核");
       if (this.#get("SELECT 1 FROM drafts WHERE item_id=? AND id<>? AND status IN ('sending','unknown') LIMIT 1", draft.itemId, id)) throw new Error("此内容项有发送结果尚未确认");
-      this.#updateDraft(id, { status: "sending", approvedAt: at });
-      this.#audit("publication.approved", { draftId: id, version, bodyHash }, at);
+      if (automatic) {
+        if (!this.source(draft.sourceId)?.autoReply || !draft.automatic || !draft.body.startsWith(AUTO_REPLY_PREFIX)) throw new Error("自动回复授权或身份标识无效");
+        if (this.hasReplyTo(draft.itemId, draft.replyToCommentId, id)) throw new Error("该评论已有回复或发送结果待核实，不能重复自动回复");
+      }
+      this.#updateDraft(id, { status: "sending", approvedAt: at, publicationMode: automatic ? "automatic" : "manual" });
+      this.#audit("publication.approved", { draftId: id, version, bodyHash, mode: automatic ? "automatic" : "manual", replyToCommentId: draft.replyToCommentId ?? null }, at);
       return this.draft(id);
     });
+  }
+  hasReplyTo(itemId, commentId, exceptId) {
+    return Boolean(this.#get("SELECT 1 FROM drafts WHERE item_id=? AND id<>? AND status IN ('sent','sending','unknown') AND json_extract(data,'$.replyToCommentId')=? LIMIT 1", itemId, exceptId, commentId));
   }
   hasUncertain(itemId, id) {
     return Boolean(this.#get("SELECT 1 FROM drafts WHERE item_id=? AND id<>? AND status IN ('sending','unknown') LIMIT 1", itemId, id));
@@ -933,8 +948,9 @@ class Store {
         this.#invalidateSource(batch.sourceId);
       }
       if (globalChanged) {
+        const previousSettings = this.settings();
         this.#run("UPDATE meta SET value=? WHERE key='settings'", json(settings));
-        this.#invalidateGlobalGuidance(settings);
+        this.#invalidateDefaults(previousSettings, settings);
       }
       const covered = batch.cases.filter(entry => proposal.caseIds.includes(entry.id));
       for (const entry of covered) this.#run("INSERT OR IGNORE INTO learned_feedback VALUES(?,?,?)", entry.feedbackId, batch.id, proposal.revision);

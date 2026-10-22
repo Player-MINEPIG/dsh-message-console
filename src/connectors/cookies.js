@@ -48,7 +48,7 @@ export class CookieTransport {
     };
     const result=this.tail.catch(()=>{}).then(work);this.tail=result.catch(()=>{});return result;
   }
-  async postComment(params,{signal}={}) {
+  async postComment(params,{signal,beforeSend}={}) {
     let sent=false;
     const work=async()=>{
       for(const key of ['oid','root','parent'])if(typeof params?.[key]!=='string'||!/^[1-9]\d*$/.test(params[key]))throw new Error('B站评论目标无效');
@@ -74,6 +74,8 @@ export class CookieTransport {
       const body=new URLSearchParams({type:'1',oid:params.oid,root:params.root,parent:params.parent,message:params.message,plat:'1',csrf:credentials.bili_jct}).toString();
       const delay=Math.max(0,this.last+this.intervalMs-Date.now());
       if(delay)await new Promise(resolve=>setTimeout(resolve,delay));
+      signal?.throwIfAborted();
+      beforeSend?.();
       signal?.throwIfAborted();
       const options={method:'POST',redirect:'manual',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(30000)]):AbortSignal.timeout(30000),headers:{Cookie:`SESSDATA=${credentials.SESSDATA}; bili_jct=${credentials.bili_jct}`,Accept:'application/json','Content-Type':'application/x-www-form-urlencoded','User-Agent':'Mozilla/5.0',Referer:'https://www.bilibili.com/',Origin:'https://www.bilibili.com'},body};
       this.last=Date.now();sent=true;

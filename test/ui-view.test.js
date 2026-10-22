@@ -53,7 +53,7 @@ test('bulk read describes source-wide pagination scope and preservation',()=>{
 
 test('feedback diff renders escaped before and after with case references and global scope',()=>{
   const html=render(FeedbackDiff,{index:0,change:{target:'global',field:'learningGuidance',before:'旧规则',after:'<script>new rule</script>',caseIds:['case-1','case-2']}});
-  assert.match(html,/全局 · 全局学习指导/);assert.match(html,/修改前/);assert.match(html,/旧规则/);assert.match(html,/修改后/);assert.match(html,/&lt;script&gt;/);assert.match(html,/<summary>依据 2 条评价<\/summary>/);assert.match(html,/<summary>技术详情<\/summary>/);assert.doesNotMatch(html,/case-1、case-2/);
+  assert.match(html,/默认配置 · 学习指导/);assert.match(html,/修改前/);assert.match(html,/旧规则/);assert.match(html,/修改后/);assert.match(html,/&lt;script&gt;/);assert.match(html,/<summary>依据 2 条评价<\/summary>/);assert.match(html,/<summary>技术详情<\/summary>/);assert.doesNotMatch(html,/case-1、case-2/);
 });
 
 test('pending proposals require explicit confirmation and show actual session plus frozen cases',()=>{

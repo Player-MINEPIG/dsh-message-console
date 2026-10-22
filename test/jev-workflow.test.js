@@ -11,7 +11,7 @@ import { createDshExecutor } from '../src/dsh.js';
 import { ConsoleService, fingerprint } from '../src/core.js';
 import { Store } from '../src/store.js';
 
-const choice = probabilities => ({ answers: { reply: { type: 'choice', choice: Object.keys(probabilities).sort((a,b) => probabilities[b]-probabilities[a])[0], probabilities, confidence: 1 } } });
+const choice = probabilities => ({ answers: { reply: { type: 'choice', choice: Object.keys(probabilities).sort((a,b) => probabilities[b]-probabilities[a])[0], probabilities, confidence: 1 }, importance: { type: 'choice', choice: '1', probabilities: { '0': 0, '1': 1, '2': 0, '3': 0 } } } });
 const decisive = { ignore: .02, draft: .95, human: .03 };
 const ambiguous = { ignore: .4, draft: .5, human: .1 };
 const scenarios = [
@@ -21,7 +21,7 @@ const scenarios = [
   { id: 'resolved', payload: choice(ambiguous), certain: true, roles: ['decision-escalation','writer','supervisor'], draft: 'ready' },
   { id: 'draft', payload: choice(decisive), roles: ['writer','supervisor'], draft: 'ready' },
   { id: 'blocked', payload: choice(decisive), roles: ['writer','supervisor'], draft: 'blocked' },
-  { id: 'missing-probabilities', payload: { answers: { reply: { type: 'choice', choice: 'draft' } } }, roles: [], error: /probabilities/ },
+  { id: 'missing-probabilities', payload: { answers: { reply: { type: 'choice', choice: 'draft' }, importance: { type: 'choice', choice: '1', probabilities: { '0': 0, '1': 1, '2': 0, '3': 0 } } } }, roles: [], error: /probabilities/ },
   { id: 'upstream-error', roles: [], error: { native: /native 响应不完整/, custom: /HTTP 401/ } },
 ];
 

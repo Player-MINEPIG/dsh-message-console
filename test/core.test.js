@@ -83,7 +83,7 @@ test('uncertain send is durable and cannot automatically retry',async t=>{
 test('scope defaults only expose applicable settings, overrides do not change other sources',async t=>{
   const f=await setup(t);await f.service.configure({fetchHours:8,reviewFocus:'correctness',replyStyle:'concise'});
   let settings=resolveSettings(f.store.settings(),f.source);assert.equal(settings.fetchHours.value,8);assert.equal(settings.fetchHours.inherited,true);assert.equal(settings.reviewFocus,undefined);
-  const source=await f.service.saveSource({...f.source,settings:{fetchHours:12}},f.source.id);settings=resolveSettings(f.store.settings(),source);assert.equal(settings.fetchHours.value,12);assert.equal(settings.fetchHours.origin,'source');
+  const source=await f.service.saveSource({...f.service.source(f.source.id),settings:{fetchHours:12}},f.source.id);settings=resolveSettings(f.store.settings(),source);assert.equal(settings.fetchHours.value,12);assert.equal(settings.fetchHours.origin,'source');
   await assert.rejects(f.service.saveSource({...f.source,settings:{reviewFocus:'invalid'}},f.source.id),/不适用/);
 });
 test('failed analysis keeps version pending, source errors do not erase successful history',async t=>{

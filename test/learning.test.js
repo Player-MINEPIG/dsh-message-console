@@ -120,7 +120,7 @@ test('learning configuration discovery identifies exact targets without exposing
   const batch = await f.start(), actor = { sessionId: batch.sessionId, actualCwd: f.workspace };
   const read = args => f.service.readLearningFromSession(actor, { section: 'configuration', ...args });
   const discovery = f.service.readLearningFromSession(actor, { section: 'batch' });
-  assert.deepEqual(discovery.fields.global, ['learningGuidance']);
+  assert.deepEqual(discovery.fields.global, ['learningGuidance', 'language', 'replyStyle', 'reviewFocus']);
   assert.ok(discovery.fields.source.includes('attentionRules'));
   assert.ok(!discovery.fields.source.includes('learningGuidance'));
   assert.ok(discovery.examples.some(example => example.target === 'global' && example.field === 'learningGuidance'));

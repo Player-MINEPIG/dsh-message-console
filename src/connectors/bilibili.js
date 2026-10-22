@@ -60,12 +60,12 @@ export class BilibiliConnector {
       const comment=row=>({id:String(row.rpid_str??row.rpid),parent:String(row.parent_str??row.parent??0),author:row.member?.uname??'',authorId:String(row.mid??row.member?.mid??''),body:row.content?.message??'',createdAt:row.ctime,...commentImages(row.content)});
       const latestTime=Math.max(0,...[root,...replies.values()].map(row=>Number(row.ctime)).filter(value=>Number.isFinite(value)&&value>0));
       const rootImages=commentImages(root.content),message=root.content?.message??'';
-      items.push({remoteId:`comment:${video.aid}:${rootId}`,kind:'comment',title:message.trim()?message.slice(0,100):rootImages.images?.length?'图片评论':'评论',body:root.content?.message??'',url:`https://www.bilibili.com/video/${video.bvid}/#reply${rootId}`,updatedAt:latestTime?new Date(latestTime*1000).toISOString():null,payload:{bvid:video.bvid,aid:String(video.aid),root:rootId,author:root.member?.uname??'',authorId:String(root.mid??root.member?.mid??''),...rootImages,video:{title:video.title,description:video.desc,owner:video.owner?.name},comments:[...replies.values()].map(comment).sort((a,b)=>a.id.localeCompare(b.id))}});
+      items.push({rootAuthorId:String(root.mid??root.member?.mid??''),remoteId:`comment:${video.aid}:${rootId}`,kind:'comment',title:message.trim()?message.slice(0,100):rootImages.images?.length?'图片评论':'评论',body:root.content?.message??'',url:`https://www.bilibili.com/video/${video.bvid}/#reply${rootId}`,updatedAt:latestTime?new Date(latestTime*1000).toISOString():null,payload:{bvid:video.bvid,aid:String(video.aid),root:rootId,author:root.member?.uname??'',...rootImages,video:{title:video.title,description:video.desc,owner:video.owner?.name},comments:[...replies.values()].map(comment).sort((a,b)=>a.id.localeCompare(b.id))}});
     }
     if(items.length+items.reduce((n,x)=>n+x.payload.comments.length,0)!==totalCount)throw new Error('B站评论总数与已采集内容不一致，本轮不推进基线');
     return {complete:true,items,metadata:{title:video.title,bvid:video.bvid,threads:items.length,replies:items.reduce((n,x)=>n+x.payload.comments.length,0)}};
   }
-  async publish(source,item,draft,{actionId,signal}={}) {
+  async publish(source,item,draft,{actionId,signal,beforeSend}={}) {
     const id=value=>(typeof value==='string'&&/^[1-9]\d*$/.test(value))||(typeof value==='number'&&Number.isSafeInteger(value)&&value>0)?String(value):null;
     const aid=id(item?.payload?.aid),root=id(item?.payload?.root);
     const parent=draft?.replyToCommentId===undefined&&!draft?.automatic?root:id(draft?.replyToCommentId);
@@ -77,7 +77,7 @@ export class BilibiliConnector {
       !draft.body.trim()||[...draft.body].length>1000||typeof this.transport.postComment!=='function'){
       const error=new Error('B站评论发送目标、来源、正文或发布能力无效');error.definitelyNotSent=true;throw error;
     }
-    const data=await this.transport.postComment({oid:aid,root,parent,message:draft.body},{signal});
+    const data=await this.transport.postComment({oid:aid,root,parent,message:draft.body},{signal,beforeSend});
     const remoteId=id(data?.rpid_str??data?.rpid),reply=data?.reply;
     const needsCaptcha=[data,reply].some(value=>value?.need_captcha!==undefined&&![false,0,'0'].includes(value.need_captcha));
     if(!remoteId||data.success===false||needsCaptcha||id(reply?.rpid_str??reply?.rpid)!==remoteId||

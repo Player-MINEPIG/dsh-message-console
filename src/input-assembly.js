@@ -27,7 +27,7 @@ function materialInput(materials = []) {
 }
 export function contentInput(item) {
   if (!item) return { status: '尚未选择实际内容项。执行时将装入当前内容及已采集讨论。' };
-  const content = Object.fromEntries(['id','sourceId','remoteId','kind','title','body','url','payload','version','changedAt'].filter(key => item[key] !== undefined).map(key => [key, item[key]]));
+  const content = Object.fromEntries(['id','sourceId','remoteId','kind','title','body','url','payload','rootAuthorId','version','changedAt'].filter(key => item[key] !== undefined).map(key => [key, item[key]]));
   if (item.previous) content.previous = Object.fromEntries(['title','body','version'].filter(key => item.previous[key] !== undefined).map(key => [key, item.previous[key]]));
   if (containsImages(item)) content.imageStatus = "包含图片。本数据块仅有链接与元数据；只有决策升级阶段会另附实际图片，以imageInput清单为准。其他阶段仅参考升级判断的reason，不得声称自己已看过图片。";
   return content;

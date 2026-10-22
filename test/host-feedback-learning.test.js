@@ -137,7 +137,7 @@ test('real PTC learning tools preserve proposal receipts and session history wit
     const querySchema = ctx.tools.schemas(ctx.agents.get(sessions.SessionId(sessionId))).find(tool => tool.name === 'dmc_read_learning');
     assert.ok(querySchema.parameters.properties.field.enum.includes('learningGuidance'));
     assert.match(querySchema.parameters.properties.field.description, /target:"global"/);
-    assert.match(querySchema.description, /source 不含 learningGuidance/);
+    assert.match(querySchema.description, /source 的文字偏好使用 settings/);
     await executorOwner.dispose();
     resumed = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-learning', model: 'resume' }, async setup(agentCtx, agent) { await ctx.agentPresets.mount(agentCtx, ctx.sessionProjections.stateOf(agent.session, 'agentPreset')); } });
     assert.ok(schemasFor(resumed).includes('dmc_read_learning')); assert.ok(schemasFor(resumed).includes('dmc_propose_learning'));

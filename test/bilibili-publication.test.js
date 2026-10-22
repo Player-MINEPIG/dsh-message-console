@@ -130,7 +130,7 @@ test('Bilibili successful status without exact reply receipt stays uncertain', a
 test('Bilibili preserves root author IDs for self-reply exclusion', async () => {
   const transport = { identities: {}, json: async (_, url) => url.includes('/nav') ? { isLogin: true, mid: 50, uname: 'self' } : url.includes('/view') ? { aid: 100, bvid: source.target } : { page: { size: 20, count: 1 }, replies: [{ rpid_str: '200', mid: 51, rcount: 0, content: { message: '合成' }, member: { uname: 'user' } }] } };
   const fetched = await new BilibiliConnector(transport).fetch(source);
-  assert.equal(fetched.items[0].payload.authorId, '51');
+  assert.equal(fetched.items[0].rootAuthorId, '51');
   assert.equal(transport.identities.bilibili.id, '50');
 });
 

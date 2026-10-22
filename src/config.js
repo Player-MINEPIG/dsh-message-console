@@ -34,7 +34,7 @@ export function validateSettings(input) {
 export function applies(spec, source) {
   return spec.scope === 'common' || spec.scope === source.platform ||
     (spec.scope === 'reply' && source.platform === 'bilibili') ||
-    (spec.scope === 'analysis' && source.types.some(type => ['comment', 'issue', 'pr', 'release'].includes(type)));
+    (spec.scope === 'analysis' && (source.types ?? []).some(type => ['comment', 'issue', 'pr', 'release'].includes(type)));
 }
 export function resolveSettings(global, source) {
   return Object.fromEntries(Object.entries(PARAMETERS).filter(([, spec]) => applies(spec, source)).map(([key, spec]) => {
@@ -58,7 +58,13 @@ export function validateSource(input) {
   const inputOrder = validateInputOrder(input.inputOrder);
   const materials=validateMaterials(input.materials);
   const settings = validateSettings(input.settings ?? {});
-  const source = { stageContexts: validateStageContexts(input.stageContexts), inputOrder, description: input.description?.trim() ?? '', tags: [...new Set((input.tags ?? []).map(tag => tag.trim()))], context: input.context??'', postHistoryInstruction: input.postHistoryInstruction??'', materials, workspaceId: input.workspaceId, name: input.name.trim(), platform, target, types: [...new Set(input.types)], settings, enabled: input.enabled !== false, attentionRules: String(input.attentionRules ?? '').slice(0,10000) };
+  if (input.autoReply !== undefined && typeof input.autoReply !== 'boolean') throw new Error('自动回复授权必须为布尔值');
+  if (input.autoReply === true && platform !== 'bilibili') throw new Error('自动回复目前仅支持B站评论');
+  const source = { autoReply: platform === 'bilibili' && input.autoReply === true, stageContexts: validateStageContexts(input.stageContexts), inputOrder, description: input.description?.trim() ?? '', tags: [...new Set((input.tags ?? []).map(tag => tag.trim()))], context: input.context??'', postHistoryInstruction: input.postHistoryInstruction??'', materials, workspaceId: input.workspaceId, name: input.name.trim(), platform, target, types: [...new Set(input.types)], settings, enabled: input.enabled !== false, attentionRules: String(input.attentionRules ?? '').slice(0,10000) };
   for (const key of Object.keys(settings)) if (!applies(PARAMETERS[key], source)) throw new Error(`此来源不适用：${key}`);
   return source;
+}
+
+export function processingSettingsOf(global, source) {
+  return Object.fromEntries(['language', 'replyStyle', 'reviewFocus'].filter(key => applies(PARAMETERS[key], source)).map(key => [key, source.settings?.[key] ?? global[key] ?? PARAMETERS[key].default]));
 }
