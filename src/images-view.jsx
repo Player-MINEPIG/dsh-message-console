@@ -30,7 +30,7 @@ export function ImageGallery({ itemId, version, commentId, images, interactive =
   const base = `items/${encodeURIComponent(itemId)}/image?version=${encodeURIComponent(version)}${commentId == null ? '' : `&commentId=${encodeURIComponent(commentId)}`}`;
   const shown = interactive ? images : images.slice(0, 3);
   return <div className="dmc-image-gallery">
-    <small>图片 {images.length} 张 · 模型尚未读取图片</small>
+    <small>图片 {images.length} 张 · 在决策升级时输入模型</small>
     <div className="dmc-image-thumbnails">{shown.map((image, index) => interactive ? <button type="button" key={index} aria-label={`查看第 ${index + 1} 张原图`} onClick={() => setOpened(index)}><CachedImage path={`${base}&index=${index}&variant=thumbnail`} alt={`评论图片 ${index + 1}`}/></button> : <CachedImage key={index} path={`${base}&index=${index}&variant=thumbnail`} alt={`评论图片 ${index + 1}`}/>)}</div>
     {!interactive && <small>展开详情查看{images.length > 3 ? `全部 ${images.length} 张图片和` : ''}大图</small>}
     {opened !== null && <div className="dmc-image-full" role="region" aria-label="评论原图"><button type="button" onClick={() => setOpened(null)}>关闭原图</button><CachedImage key={opened} path={`${base}&index=${opened}&variant=original`} alt={`评论原图 ${opened + 1}`}/></div>}
@@ -41,5 +41,5 @@ export function ImageCachePanel({ revision = 0 }) {
   const resource = useRemoteResource('image-cache', { revision: revision + refresh }), data = resource.data;
   const mb = bytes => (bytes / 1048576).toFixed(1);
   const clear = async () => { setBusy(true); setError(''); try { await request('image-cache/clear', {}); setRefresh(n => n + 1); } catch (error) { setError(error.message); } finally { setBusy(false); } };
-  return <section className="dmc-image-cache"><h3>图片缓存</h3><ResourceError error={error || resource.error}/>{data && <p>已使用 {mb(data.usedBytes)} / {mb(data.maxBytes)} MiB · {data.files} 个文件 · 原图 {mb(data.originalBytes)} MiB · 缩略图 {mb(data.thumbnailBytes)} MiB</p>}<p className="dmc-muted">按需下载。超过容量先清理最久未使用的原图，再清理缩略图。清理保留评论、图片链接和分析结果，再次查看时尝试重新下载。</p><button type="button" disabled={busy} onClick={() => void clear()}>{busy ? '正在清理…' : '清空图片缓存'}</button></section>;
+  return <section className="dmc-image-cache"><h3>图片缓存</h3><ResourceError error={error || resource.error}/>{data && <p>已使用 {mb(data.usedBytes)} / {mb(data.maxBytes)} MiB · {data.files} 个文件 · 原图 {mb(data.originalBytes)} MiB · 缩略图 {mb(data.thumbnailBytes)} MiB</p>}<p className="dmc-muted">按需下载。此处不包含已存入 DSH 会话历史的模型输入附件。超过容量先清理最久未使用的原图，再清理缩略图。清理保留评论、图片链接和分析结果，再次查看时尝试重新下载。</p><button type="button" disabled={busy} onClick={() => void clear()}>{busy ? '正在清理…' : '清空图片缓存'}</button></section>;
 }

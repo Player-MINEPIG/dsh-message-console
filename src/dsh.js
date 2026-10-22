@@ -4,6 +4,7 @@ import { postHistoryText, learningGuidanceText } from './source-context.js';
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { WorkflowExecutor } from './executor.js';
+import { escalationImages } from './escalation-images.js';
 import { queueConversationBackground, assertStorageOutsideWorkspace } from './agent-tools.js';
 
 function stagePreset(instructions,postHistoryInstruction) {
@@ -120,7 +121,7 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
     }
     return null;
   }
-  async function runAgent({ role, input, instructions, provider, model, signal, onSession, title, workspaceId, postHistoryInstruction, runId, batchId, draftId }) {
+  async function runAgent({ role, input, imageBlocks = [], instructions, provider, model, signal, onSession, title, workspaceId, postHistoryInstruction, runId, batchId, draftId }) {
     signal?.throwIfAborted();
     const reused = await existingAnalysis({runId,role,workspaceId,provider,model});
     const created = reused ?? await create({ provider, model, instructions, title, onSession, workspaceId, postHistoryInstruction, runId, batchId, role, draftId });
@@ -131,7 +132,7 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
       if (ownedTurn === undefined) agent.inbox.remove(message.id);
       else agent.cancel({kind:'hook',reason:signal?.reason?.kind === 'owner-disposed' ? 'message-console owner disposed' : 'message-console signal cancelled'},{keepInbox:true});
     };
-    const message = createUserMessage({source:{kind:'dsh-message-console',form:'instructions',...(runId ? {runId} : {})},content:[{type:'text',text:serializeInput({role,input,...(['writer','review','investigate'].includes(role) && domain().analysisRoundContext ? {round:domain().analysisRoundContext(runId)} : {})})}]});
+    const message = createUserMessage({source:{kind:'dsh-message-console',form:'instructions',...(runId ? {runId} : {})},content:[{type:'text',text:serializeInput({role,input,...(['writer','review','investigate'].includes(role) && domain().analysisRoundContext ? {round:domain().analysisRoundContext(runId)} : {})})},...imageBlocks]});
     let ownedTurn, turnEnded = false, resolveEnd;
     const turnEnd = new Promise(resolve => { resolveEnd = resolve; });
     const stopEvent = agent.ctx.on('session/event',(_session,event)=>{
@@ -189,6 +190,7 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
     return sessionId;
   }
   return new WorkflowExecutor({
+    prepareImages: request => escalationImages(ctx, domain(), request),
     decision: (request, options) => { if (!ctx.decisionModels?.ask) throw new Error('Jev decisionModels 服务不可用'); return ctx.decisionModels.ask(request, options); },
     runAgent, conversation,
     ...createModelCatalog(ctx),

@@ -34,12 +34,11 @@ test('images retain version-specific ownership in cards, comments, change sample
  const removed=f.service.changedComments(f.id,{version:f.store.item(f.id).version,baseVersion:current}).items[0];assert.equal(removed.version,current);assert.deepEqual(removed.images,[photo('changed')]);assert.deepEqual(f.store.image(f.id,{version:removed.version,commentId:removed.id,index:0}),photo('changed'));
 });
 
-test('cache controls are global only and model inputs explicitly describe unread images without claiming vision',async()=>{
+test('cache controls are global only and text stages explicitly distinguish escalation image inputs',async()=>{
  assert.equal(validateSettings({imageCacheMaxMB:64}).imageCacheMaxMB,64);assert.throws(()=>validateSettings({imageCacheMaxMB:0}));
  assert.throws(()=>validateSource({workspaceId:'ws',name:'source',platform:'bilibili',target:'BV1111111111',types:['comment'],settings:{imageCacheMaxMB:64}}),/不适用/);
- const item={kind:'comment',payload:{comments:[{images:[photo('a')]}]}};assert.match(contentInput(item).imageStatus,/尚未读取/);
- const executor=new WorkflowExecutor({decision:()=>{throw new Error('must not infer pictures');},runAgent:()=>{throw new Error('no vision');}});
- const result=await executor.analyze({item});assert.equal(result.evidence,'insufficient');assert.equal(result.intervention,'human');assert.match(result.summary,/尚未读取图片/);
+ const item={kind:'comment',payload:{comments:[{images:[photo('a')]}]}};assert.match(contentInput(item).imageStatus,/只有决策升级/);
+
 });
 
 test('binary image route enforces owner admission and exact stored refs; cache clear uses protected POST',async()=>{

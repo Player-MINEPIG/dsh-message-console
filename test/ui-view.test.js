@@ -159,9 +159,9 @@ test('work record shows frozen cause and historical reply excerpt without invent
 
 test('comment images use private lazy previews and explicit unread labels without external image URLs or nested card buttons',()=>{
  const images=[{url:'https://i0.hdslb.com/bfs/new_dyn/example.png'}];
- const gallery=render(ImageGallery,{itemId:'s:i',version:'v1',images});assert.match(gallery,/图片 1 张 · 模型尚未读取图片/);assert.match(gallery,/查看第 1 张原图/);assert.match(gallery,/\[图片\]/);assert.doesNotMatch(gallery,/src="https:/);
+ const gallery=render(ImageGallery,{itemId:'s:i',version:'v1',images});assert.match(gallery,/图片 1 张 · 在决策升级时输入模型/);assert.match(gallery,/查看第 1 张原图/);assert.match(gallery,/\[图片\]/);assert.doesNotMatch(gallery,/src="https:/);
  const card=render(ItemCard,{item:{id:'i',kind:'comment',title:'图片评论',status:'read',version:'v1',payload:{images}},onSelect(){}});
- assert.match(card,/模型尚未读取图片/);assert.doesNotMatch(card,/查看第 1 张原图/);
+ assert.match(card,/在决策升级时输入模型/);assert.doesNotMatch(card,/查看第 1 张原图/);
  assert.equal([...card.matchAll(/<button/g)].length,1,'image previews do not nest interactive buttons inside card button');
  const panel=render(ImageCachePanel,{});assert.match(panel,/清空图片缓存/);assert.match(panel,/<button type="button"/);assert.match(panel,/保留评论、图片链接和分析结果/);
 });
