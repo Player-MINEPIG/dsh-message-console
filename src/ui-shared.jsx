@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { request } from './api.js';
 import { ModelSettingField } from './model-selector.jsx';
-export const labels = { github: 'GitHub', bilibili: '哔哩哔哩', issue: 'Issue', pr: 'Pull request', comment: '评论对话', release: 'Release', 'pending-supervision': '等待独立监督', superseded: '已被新稿替换', ready: '等待你审核', blocked: '监督已拦截', stale: '上下文已变化', sent: '已发布', sending: '发送中', unknown: '结果待核实', dismissed: '暂不发布', none: '无需处理', pending: '待处理', later: '稍后处理', done: '已处理' };
+export const labels = { github: 'GitHub', bilibili: '哔哩哔哩', issue: 'Issue', pr: 'Pull request', comment: '评论对话', 'private-message':'私信对话', release: 'Release', 'pending-supervision': '等待独立监督', superseded: '已被新稿替换', ready: '等待你审核', blocked: '监督已拦截', stale: '上下文已变化', sent: '已发布', sending: '发送中', unknown: '结果待核实', dismissed: '暂不发布', none: '无需处理', pending: '待处理', later: '稍后处理', done: '已处理' };
 export const githubStateLabel = item => ['issue','pr'].includes(item.kind) ? (item.payload?.merged || String(item.payload?.state).toLowerCase()==='merged' ? '已合并' : ({open:'开放',closed:'已关闭'})[String(item.payload?.state).toLowerCase()]) : null;
 export const time = value => value ? new Date(value).toLocaleString('zh-CN', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '尚未执行';
 export const safeURL = value => { try { const url = new URL(value); return ['https:','http:'].includes(url.protocol) ? url.href : undefined; } catch { return undefined; } };
@@ -12,7 +12,7 @@ const settingGroups = [
   { title: '图片缓存容量与保留期限', keys: ['imageCacheMaxMB','imageOriginalDays','imageThumbnailDays','imageCacheReserveMB'], hint: '网页图片缓存共享预算，临时下载也计入上限；决策升级图片只在内存转发，不生成会话附件。低于磁盘预留空间时停止新增缓存；图片链接随评论历史保留。' },
   { title: 'GitHub 整理范围', keys: ['includeClosed'], hint: '始终采集全部状态。默认仅整理开放的 Issue 和 PR，Release 照常整理。开启后手动和自动整理也包含已关闭或已合并内容。' },
   { title: '抓取与整理频率', keys: ['fetchHours','organizeHours'], hint: '自动整理只处理新变化和需要更新的既有分析。手动整理已有数据也包含尚未分析的历史基线。' },
-  { title: 'Jev · 轻量决策', keys: ['decisionProfile','decisionConfidence','decisionMargin'], hint: '评论先由 Jev 输出无需回复、可自动回复、人工介入的选项概率，独立判断重要程度。普通模型的概率为自报估计，未经校准，阈值需用实际样本验证。选择默认项时使用 Jev 的默认 profile。此路线独立于生成模型。' },
+  { title: 'Jev · 轻量决策', keys: ['decisionProfile','decisionConfidence','decisionMargin'], hint: '评论先由 Jev 输出无需回复、可自动回复、人工介入的选项概率，独立判断重要程度。私信仅评定重要程度，低置信也不升级或拟稿。普通模型的概率为自报估计，未经校准，阈值需用实际样本验证。选择默认项时使用 Jev 的默认 profile。此路线独立于生成模型。' },
   { title: '生成 / 分析模型', keys: ['writerProvider','writerModel'], hint: '用于低置信决策的一次升级、评论拟稿、PR 审查、issue 核实和 release 摘要。摘要与正文来自同一次生成 / 分析输出，没有独立总结调用。' },
   { title: '独立监督模型', keys: ['supervisorProvider','supervisorModel'], hint: '有拟发布正文后才检查草稿。未单独填写的字段继承生成 / 分析模型，但仍创建独立会话。已授权的B站评论可在监督通过后由插件自动发送，其他草稿等待你审核。' },
   { title: '评价学习指导', keys: ['learningGuidance'], hint: '作为四个模型阶段的共同指导。整理评价生成提案后，只有人工确认应用才会修改这里。也可手动编辑。' },

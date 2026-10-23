@@ -96,3 +96,13 @@ test('Bilibili default prompts agree with explicit automatic authorization and r
  assert.match(template.stageContexts.supervision.context,/由「看点什么」插件自动回复：/);
  assert.match(sourcePromptTemplate({platform:'github',types:['issue']}).postHistoryInstruction,/任何对外发布仍须用户另行审核/);
 });
+
+
+test('switching comment templates to private messages clears unused default stages and preserves explicit edits',()=>{
+  const comments=sourcePromptTemplate({platform:'bilibili',types:['comment']}),privateMessages=sourcePromptTemplate({platform:'bilibili',types:['private-message']});
+  const next=mergeSourceSuggestions(comments,privateMessages);
+  for(const stage of ['generation','escalation','supervision'])assert.equal(next.stageContexts[stage].context,'');
+  assert.match(next.stageContexts.decision.context,/只评定重要程度/);
+  const edited=mergeSourceSuggestions({...comments,stageContexts:{...comments.stageContexts,generation:{context:'用户明确补充的资料',materials:[]}}},privateMessages,{protectedFields:['stageContexts.generation.context']});
+  assert.equal(edited.stageContexts.generation.context,'用户明确补充的资料');
+});

@@ -30,6 +30,7 @@ test('stock host scopes actual tools, workspace permissions, AGENTS and durable 
     requireSubmission(id) { const result = receipts.get(id); if (!result) throw new Error('本轮没有通过工具保存结果'); return result; },
     endSession() {},
     sessionBackground(){return null;},
+    item(){return {kind:"comment"};},
   };
   try {
     await installAgentTools(ctx, service);

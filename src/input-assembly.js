@@ -27,6 +27,17 @@ function materialInput(materials = []) {
 }
 export function contentInput(item) {
   if (!item) return { status: '尚未选择实际内容项。执行时将装入当前内容及已采集讨论。' };
+  if(item.kind==='private-message') {
+    const all=item.payload?.comments??[], recent=all.slice(-100);
+    let remaining=24000, truncated=0;
+    const messages=recent.toReversed().map(row=>{
+      const text=row.body.slice(0,Math.min(2000,remaining));
+      if(text.length<row.body.length)truncated++;
+      remaining-=text.length;
+      return {id:row.id,author:row.author,direction:row.direction,createdAt:row.createdAt,messageType:row.messageType,withdrawn:row.withdrawn,body:text};
+    }).reverse();
+    return {id:item.id,kind:item.kind,title:item.title,version:item.version,contact:item.payload?.contact,collection:item.payload?.collection,visibilityLimit:item.payload?.visibilityLimit,modelScope:{storedMessages:all.length,messages:messages.length,firstId:messages[0]?.id,lastId:messages.at(-1)?.id,maxMessages:100,maxBodyCharacters:24000,maxPerMessage:2000,truncatedMessages:truncated,note:'仅评定此范围的重要性。范围外消息未输入模型；图片/卡片仅使用已有文字及占位，不能声称查看媒体。'},messages};
+  }
   const content = Object.fromEntries(['id','sourceId','remoteId','kind','title','body','url','payload','rootAuthorId','version','changedAt'].filter(key => item[key] !== undefined).map(key => [key, item[key]]));
   if (item.previous) content.previous = Object.fromEntries(['title','body','version'].filter(key => item.previous[key] !== undefined).map(key => [key, item.previous[key]]));
   if (containsImages(item)) content.imageStatus = "包含图片。本数据块仅有链接与元数据；只有决策升级阶段会另附实际图片，以imageInput清单为准。其他阶段仅参考升级判断的reason，不得声称自己已看过图片。";

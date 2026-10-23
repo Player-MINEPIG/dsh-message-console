@@ -1,6 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 
-const HOSTS = {github: new Set(['github.com']), bilibili: new Set(['api.bilibili.com','www.bilibili.com'])};
+const HOSTS = {github: new Set(['github.com']), bilibili: new Set(['api.bilibili.com','www.bilibili.com','api.vc.bilibili.com'])};
 export class CookieAuthenticationError extends Error {
   constructor(message){super(message);this.code='COOKIE_AUTH_REQUIRED';}
 }

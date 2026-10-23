@@ -31,7 +31,7 @@ DSH Web slots / uiWorkspace
 
 ```js
 connector.status() // { ready, canPublish, reason }
-connector.fetch(source, { signal }) // { complete: true, items: ContentItem[] }
+connector.fetch(source, { signal, readPreviousItem }) // { complete: true, items: ContentItem[] }
 connector.getItem(source, item, { signal }) // 发布前重新读取单项
 connector.publish(source, item, draft, { actionId }) // { remoteId, url? }
 ```
@@ -288,6 +288,18 @@ DSH 运行器等待该真实消息所属 session/turn 的 `turn/end` 并 flush �
 `agent/inbox/claimed` 将真实消息关联到 turn，路由钩子按 turn 采用本轮模型，后续用户轮恢复原路由。`session/event` 只结算该 session/turn 的 turn/end；discard 与宿主 idle 提供未接受消息/异常缺日志的失败兜底。计时器只取消仍执行的目标轮，不影响后续用户轮。超时保留 TIMEOUT、时限和真实 hook 原因，外部信号及宿主取消另记。
 
 工作列表的 submission 是 indexed receipt/audit 只读投影，优先正式分析，不被同 run 的监督收据覆盖。原 failed/interrupted 和 finishedAt 不因后补交而改成 completed；结果保存时间、当时采纳与草稿当前监督状态独立展示。同步草稿监督仍沿原 executor 路径。
+
+## 统一私信
+
+B站私信来源固定 `target: 'private-messages'`、`types: ['private-message']`。`ConsoleService.saveSource` 通过真实 nav 登录态绑定 `accountId`，编辑保持原绑定；连接器每轮先复核账号。`Store.saveSource` 在事务内拒绝第二个私信来源，包括停用的来源。
+
+`bilibili-private.js` 独占私信平台协议。会话列表用 `end_ts` 向旧翻页，消息用 `end_seqno` 向旧翻页；安全整数 `msg_seqno` 是会话内身份，不使用超精度 `msg_key`。初见仅最近100条。后续从最新消息翻到本地已知水位或平台可见末尾，与 `readPreviousItem(remoteId)` 返回的旧域快照合并。此回调不暴露Store和SQL，Store不解析消息协议。整批采集成功后才由 `applyFetch` 事务写入完整不可变快照及来源metadata。已知水位不再可见时保留本地消息并明确可见性限制，不声明缺口完整。
+
+消息存为已有按版本分页的 `comments` 行，额外投影作者ID、方向、类型和发送时间。非文字消息保留平台原始字段，可通过 `content(section: 'comment')` 分块读取。撤回消息只保留撤回占位，不保存平台返回的旧正文。轻量头投影联系人和采集范围，历史版本可分页阅读全部已采集消息。Cookie只向新增精确主机 `api.vc.bilibili.com` 转发，不调用发送或已读接口。
+
+`WorkflowExecutor` 对私信只问Jev `importance` 四选项，校验完整归一化概率，保留真实输入输出。`contentInput` 仅输入最近100条，正文总计最多24000字符、单条2000字符，剔除完整payload/rawContent及重复body，显式记录范围和截断。图片、卡片等仅含文字及占位，不走图片模型链。固定摘要和概率理由不声称生成过内容摘要；低置信仅标注不足，不升级、不推断紧急性，`urgent:false/intervention:none`。
+
+`canDraft(kind)` 统一限制受管提交、普通工作区、Store最终存稿、监督及发布。私信人工会话保留真实历史和读取工具，不安装存稿工具。人工阅读与评价学习显式复用全局生成模型路由，不增加自动整理阶段。私信来源不展示自动回复授权、拟稿、监督设置或草稿入口。
 
 ## 按来源授权的评论发布
 

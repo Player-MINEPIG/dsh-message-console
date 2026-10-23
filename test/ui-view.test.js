@@ -6,8 +6,8 @@ import { build } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 const directory=await mkdtemp(join(process.cwd(),'.local/ui-test-'));
-await build({stdin:{contents:"export {ImageGallery,ImageCachePanel} from './src/images-view.jsx'; export {WorkRecord} from './src/work-records.jsx'; export {Dashboard,SourcePage,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination,SettingFields} from './src/ui-shared.jsx'; export {ConsoleApp,VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
-const {ImageGallery,ImageCachePanel,WorkRecord,Dashboard,SourcePage,ItemCard,ReadAllControl,ListPagination,SettingFields,ConsoleApp,VideoContext,FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory}=await import(join(directory,'ui.mjs'));
+await build({stdin:{contents:"export {ImageGallery,ImageCachePanel} from './src/images-view.jsx'; export {WorkRecord} from './src/work-records.jsx'; export {Dashboard,SourcePage,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination,SettingFields} from './src/ui-shared.jsx'; export {SourceEditor} from './src/source-editor.jsx'; export {ConsoleApp,VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
+const {SourceEditor,ImageGallery,ImageCachePanel,WorkRecord,Dashboard,SourcePage,ItemCard,ReadAllControl,ListPagination,SettingFields,ConsoleApp,VideoContext,FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory}=await import(join(directory,'ui.mjs'));
 test.after(()=>rm(directory,{recursive:true,force:true}));
 const render=(Component,props)=>renderToStaticMarkup(React.createElement(Component,props));
 test('overview renders server summaries without any item or draft collection',()=>{
@@ -164,4 +164,17 @@ test('comment images use private lazy previews and explicit unread labels withou
  assert.match(card,/在决策升级时输入模型/);assert.doesNotMatch(card,/查看第 1 张原图/);
  assert.equal([...card.matchAll(/<button/g)].length,1,'image previews do not nest interactive buttons inside card button');
  const panel=render(ImageCachePanel,{});assert.match(panel,/清空图片缓存/);assert.match(panel,/<button type="button"/);assert.match(panel,/保留评论、图片链接和分析结果/);
+});
+
+
+test('private source editor exposes only importance stage and settings, without video or reply authorization',()=>{
+  const source={id:'s',name:'统一私信',platform:'bilibili',target:'private-messages',types:['private-message'],workspaceId:'ws',settings:{},materials:[]};
+  const parameters={fetchHours:{scope:'common',default:6,type:'number'},decisionProfile:{scope:'decision',default:'',type:'string'},writerModel:{scope:'analysis',default:'',type:'string'},replyStyle:{scope:'reply',default:'',type:'string'}};
+  const html=render(SourceEditor,{source,state:{settings:{},parameters,workspaces:[{id:'ws',title:'工作区',path:'/workspace',status:'ok'}]},action(){},onBack(){},onSaved(){},catalog:{providers:[],decisionProfiles:[],lists:{}}});
+  assert.match(html,/统一私信/);assert.match(html,/仅评定重要程度/);assert.match(html,/人工阅读会话及评价学习使用全局/);assert.match(html,/Jev 决策 profile/);
+  assert.doesNotMatch(html,/来源链接或目标|评论自动回复授权|回复风格|低置信决策升级 · 专属背景|独立监督 · 专属背景|生成 \/ 分析模型<\/legend>/);
+});
+test('private work record describes importance and has no comment workflow explanation',()=>{
+  const html=render(WorkRecord,{run:{id:'r',status:'completed',kind:'automatic',processing:'decision-only',hasDecision:true,sessions:[]},item:{kind:'private-message'},openSession(){}});
+  assert.match(html,/仅评定消息重要程度/);assert.match(html,/Jev 重要程度/);assert.doesNotMatch(html,/Jev 与升级判断|决策分流后结束/);
 });
