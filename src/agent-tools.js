@@ -1,3 +1,4 @@
+import { canDraft } from './content-capabilities.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { serializeInput } from './input-assembly.js';
 import { realpath } from 'node:fs/promises';
@@ -118,7 +119,7 @@ export async function installAgentTools(ctx, service) {
         output, isConcurrencySafe: () => true,
         execute: (args, exec) => service.readFromSession({ sessionId: String(actor(exec).session.id), actualCwd: agent.session.header.cwd,runId:round() }, args),
       }));
-      disposers.push(agent.ctx.tools.register({
+      if(role!=='human'||canDraft(service.item(binding.itemId).kind))disposers.push(agent.ctx.tools.register({
         name: 'dmc_submit_result', description: role === 'workspace' ? '看点什么 / Message Console：保存当前工作区内容项的回复草稿，kind=draft；先读取 item 获取 itemId/version/contextVersion。operationKey 标识一次提交，重试沿用相同键和内容。每项可独立存稿；保存后仍待独立监督与人工发布审核，不属于自动发送流程。' : '看点什么 / Message Console：正式保存本轮结果。operationKey 标识一次提交，重试须沿用相同键和内容。每个新 round.runId 都须首次提交，即使会话历史已有结果；同轮已提交分析的修改请用 dmc_revise_analysis，不要换键重复首次提交。保存草稿不授权发布；监督仅评定本轮绑定的草稿。',
         parameters, output,
         async execute(submission, exec) {

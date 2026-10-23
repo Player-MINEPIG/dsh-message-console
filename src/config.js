@@ -1,3 +1,4 @@
+import { applies } from './content-capabilities.js';
 import { validateInputOrder } from './input-assembly.js';
 import { normalizeTarget, validateMaterials, validateStageContexts } from './source-context.js';
 export const PARAMETERS = {
@@ -9,9 +10,9 @@ export const PARAMETERS = {
   organizeHours: { scope: 'common', default: 6, type: 'number', min: 0.25, max: 168 },
   language: { scope: 'common', default: '中文', type: 'string' },
   learningGuidance: { scope: 'common', default: '', type: 'string' },
-  decisionProfile: { scope: 'reply', default: '', type: 'string' },
-  decisionConfidence: { scope: 'reply', default: 0.8, type: 'number', min: 0.5, max: 1 },
-  decisionMargin: { scope: 'reply', default: 0.2, type: 'number', min: 0, max: 1 },
+  decisionProfile: { scope: 'decision', default: '', type: 'string' },
+  decisionConfidence: { scope: 'decision', default: 0.8, type: 'number', min: 0.5, max: 1 },
+  decisionMargin: { scope: 'decision', default: 0.2, type: 'number', min: 0, max: 1 },
   writerProvider: { scope: 'analysis', default: '', type: 'string' },
   writerModel: { scope: 'analysis', default: '', type: 'string' },
   supervisorProvider: { scope: 'analysis', default: '', type: 'string' },
@@ -31,11 +32,7 @@ export function validateSettings(input) {
   }
   return structuredClone(input);
 }
-export function applies(spec, source) {
-  return spec.scope === 'common' || spec.scope === source.platform ||
-    (spec.scope === 'reply' && source.platform === 'bilibili') ||
-    (spec.scope === 'analysis' && (source.types ?? []).some(type => ['comment', 'issue', 'pr', 'release'].includes(type)));
-}
+export { applies };
 export function resolveSettings(global, source) {
   return Object.fromEntries(Object.entries(PARAMETERS).filter(([, spec]) => applies(spec, source)).map(([key, spec]) => {
     const overridden = Object.hasOwn(source.settings, key);
@@ -49,9 +46,11 @@ export function validateSource(input) {
   const platform = input.platform;
   if (!['github', 'bilibili'].includes(platform)) throw new Error('暂不支持此平台');
   if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 120) throw new Error('来源名称无效');
-  const allowed = platform === 'github' ? ['issue', 'pr', 'release'] : ['comment'];
+  const allowed = platform === 'github' ? ['issue', 'pr', 'release'] : ['comment','private-message'];
   if (!Array.isArray(input.types) || !input.types.length || input.types.some(type => !allowed.includes(type))) throw new Error('来源内容类型无效');
   const target = normalizeTarget(platform,input.target);
+  const privateMessages=input.types.includes('private-message');
+  if(platform==='bilibili'&&(privateMessages ? input.types.length!==1||target!=='private-messages' : target==='private-messages'))throw new Error('私信来源必须使用独立私信类型和统一目标');
   for(const key of ['context','postHistoryInstruction']) if(input[key] !== undefined && (typeof input[key] !== 'string' || input[key].length>20000)) throw new Error('来源上下文或post-history指令过长');
   if (input.description !== undefined && (typeof input.description !== 'string' || input.description.length > 1000)) throw new Error('来源简介最多1000字');
   if (input.tags !== undefined && (!Array.isArray(input.tags) || input.tags.length > 12 || input.tags.some(tag => typeof tag !== 'string' || !tag.trim() || tag.length > 40))) throw new Error('来源标签最多12个，每个1至40字');
@@ -59,7 +58,7 @@ export function validateSource(input) {
   const materials=validateMaterials(input.materials);
   const settings = validateSettings(input.settings ?? {});
   if (input.autoReply !== undefined && typeof input.autoReply !== 'boolean') throw new Error('自动回复授权必须为布尔值');
-  if (input.autoReply === true && platform !== 'bilibili') throw new Error('自动回复目前仅支持B站评论');
+  if (input.autoReply === true && (platform !== 'bilibili' || privateMessages)) throw new Error('自动回复目前仅支持B站评论');
   const source = { autoReply: platform === 'bilibili' && input.autoReply === true, stageContexts: validateStageContexts(input.stageContexts), inputOrder, description: input.description?.trim() ?? '', tags: [...new Set((input.tags ?? []).map(tag => tag.trim()))], context: input.context??'', postHistoryInstruction: input.postHistoryInstruction??'', materials, workspaceId: input.workspaceId, name: input.name.trim(), platform, target, types: [...new Set(input.types)], settings, enabled: input.enabled !== false, attentionRules: String(input.attentionRules ?? '').slice(0,10000) };
   for (const key of Object.keys(settings)) if (!applies(PARAMETERS[key], source)) throw new Error(`此来源不适用：${key}`);
   return source;

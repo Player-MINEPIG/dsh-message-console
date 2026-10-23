@@ -1,3 +1,4 @@
+import { canDraft } from './content-capabilities.js';
 import { ImageGallery, ImageCachePanel } from './images-view.jsx';
 import { ChangeReason } from './change-reason-view.jsx';
 import { syncSessionDirectory } from './session-directory.js';
@@ -59,19 +60,19 @@ function GlobalSettings({state,action,pending,catalog}) {
 function Detail({selection,source,revision,action,pending,openSession,close,onFeedbackDirty,onFeedbackSaved}) {
   const root=`items/${encodeURIComponent(selection.id)}`;
   const header=useRemoteResource(`${root}?version=${encodeURIComponent(selection.version)}`,{revision,pollMs:5000}),item=header.data;
-  return <section className="dmc-detail"><header><span>{item?labels[item.kind]:'内容详情'}</span><button aria-label="关闭详情" onClick={close}>×</button></header><ResourceError error={header.error}/>{!item?<p>正在加载详情…</p>:<><h2>{item.title}</h2>{githubStateLabel(item)&&<p>{githubStateLabel(item)}</p>}<a href={safeURL(item.url)} target="_blank" rel="noreferrer">查看原始来源 ↗</a><div className="dmc-detail-actions"><select aria-label="处理状态" value={item.handling} onChange={event=>action(`${root}/handling`,{handling:event.target.value})}>{['none','pending','later','done'].map(value=><option key={value} value={value}>{labels[value]}</option>)}</select><button disabled={pending} onClick={async()=>{const result=await action(`${root}/conversation`);if(result)openSession(result.sessionId);}}>进入会话处理 ↗</button></div>
+  return <section className="dmc-detail"><header><span>{item?labels[item.kind]:'内容详情'}</span><button aria-label="关闭详情" onClick={close}>×</button></header><ResourceError error={header.error}/>{!item?<p>正在加载详情…</p>:<><h2>{item.title}</h2>{githubStateLabel(item)&&<p>{githubStateLabel(item)}</p>}<a href={safeURL(item.url)} target="_blank" rel="noreferrer">查看原始来源 ↗</a><div className="dmc-detail-actions"><select aria-label="处理状态" value={item.handling} onChange={event=>action(`${root}/handling`,{handling:event.target.value})}>{['none','pending','later','done'].map(value=><option key={value} value={value}>{labels[value]}</option>)}</select><button disabled={pending} onClick={async()=>{const result=await action(`${root}/conversation`);if(result)openSession(result.sessionId);}}>{item.kind==='private-message'?'进入会话阅读 ↗':'进入会话处理 ↗'}</button></div>
     {currentAnalysis(item)&&<div className="dmc-analysis"><h3>整理结果</h3><p>{item.analysis.summary}</p><small>{item.analysis.reason}</small></div>}
     <ImageGallery itemId={item.id} version={item.version} images={item.payload?.images}/>
     <ChangeReason organization={item.organization}/>
-    {item.organization?.reason?.comments?.samples?.length>0&&<Expandable title="本轮楼中楼变化" initialOpen><ChangedComments key={`${item.id}:${item.organization.reason.baseVersion}:${item.version}`} root={root} reason={item.organization.reason}/></Expandable>}
+    {item.kind==='comment'&&item.organization?.reason?.comments?.samples?.length>0&&<Expandable title="本轮楼中楼变化" initialOpen><ChangedComments key={`${item.id}:${item.organization.reason.baseVersion}:${item.version}`} root={root} reason={item.organization.reason}/></Expandable>}
     <FeedbackEditor item={item} revision={revision} onDirtyChange={onFeedbackDirty} onSaved={onFeedbackSaved}/>
     <VideoContext root={root} item={item}/>
     {item.payload?.contextLimit&&<p className="dmc-muted">{item.payload.contextLimit}</p>}
-    <Expandable title="原始内容" initialOpen><ContentChunks path={`${root}/content?version=${encodeURIComponent(item.version)}&section=body`}/></Expandable>
-    {item.commentsCount>0&&<Expandable title={`已采集的评论 · ${item.commentsCount} 条`}><Comments root={root} version={item.version}/></Expandable>}
+    {item.kind==='private-message'&&<p className="dmc-muted">{item.payload?.collection?.note} 模型只读取最近100条、正文合计最多24000字符，每条最多2000字符。图片和卡片仅提供文字、元信息与占位。{item.payload?.visibilityLimit}</p>}<Expandable title="原始内容" initialOpen><ContentChunks path={`${root}/content?version=${encodeURIComponent(item.version)}&section=body`}/></Expandable>
+    {item.commentsCount>0&&<Expandable title={`已采集的${item.kind==='private-message'?'消息':'评论'} · ${item.commentsCount} 条`}><Comments root={root} version={item.version} privateMessages={item.kind==='private-message'}/></Expandable>}
     {item.diffLength>0&&<Expandable title="已采集的 PR diff"><ContentChunks path={`${root}/content?version=${encodeURIComponent(item.version)}&section=diff`}/></Expandable>}
-    <Expandable title="历史版本"><Versions root={root}/></Expandable>
-    <Drafts root={root} source={source} revision={revision} pending={pending} action={action}/>
+    <Expandable title="历史版本"><Versions root={root} privateMessages={item.kind==='private-message'}/></Expandable>
+    <>{canDraft(item.kind)&&<Drafts root={root} source={source} revision={revision} pending={pending} action={action}/>}</>
     <WorkRecords item={item} root={root} revision={revision} openSession={openSession}/>
   </>}</section>;
 }
@@ -101,18 +102,18 @@ export function ChangedComments({root,reason}) {
   const resource=useRemoteResource(`${root}/changes?version=${encodeURIComponent(reason.version)}&baseVersion=${encodeURIComponent(reason.baseVersion)}&page=${page}&pageSize=10`),data=resource.data;
   return <><ResourceError error={resource.error}/>{!data&&!resource.error&&<p>正在加载楼中楼变化…</p>}{data?.items.map(comment=><div className="dmc-changed-comment" key={comment.change+comment.id}><small>{{added:'新增',edited:'修改',removed:'不再可见 · 此前采集的内容'}[comment.change]} · {comment.author||'作者未知'}</small><ImageGallery itemId={decodeURIComponent(root.slice(6))} version={comment.version} commentId={comment.id} images={comment.images}/><Expandable title={comment.excerpt||'查看评论全文'}><ContentChunks path={`${root}/content?version=${encodeURIComponent(comment.version)}&section=comment&commentId=${encodeURIComponent(comment.id)}`}/></Expandable></div>)}{data&&<ListPagination pagination={data} onPage={setPage} label="楼中楼变化分页"/>}</>;
 }
-function Comments({root,version}) {
+function Comments({root,version,privateMessages=false}) {
   const [page,setPage]=useState(1),[pageSize,setPageSize]=useState(10);
   const resource=useRemoteResource(`${root}/comments?version=${encodeURIComponent(version)}&page=${page}&pageSize=${pageSize}`),data=resource.data;
-  return <><ResourceError error={resource.error}/>{resource.loading&&!data&&<p>正在加载评论…</p>}{data?.items.map(comment=><blockquote key={comment.id}><strong>{comment.author||'未知作者'}</strong>{comment.parent&&<small> · 回复 {comment.parent}</small>}<p>{comment.excerpt}</p><ImageGallery itemId={decodeURIComponent(root.slice(6))} version={version} commentId={comment.id} images={comment.images}/><Expandable title="查看此评论全文"><ContentChunks path={`${root}/content?version=${encodeURIComponent(version)}&section=comment&commentId=${encodeURIComponent(comment.id)}`}/></Expandable></blockquote>)}{data&&<ListPagination pagination={data} pageSize={pageSize} onPage={setPage} onPageSize={value=>{setPage(1);setPageSize(value);}} label="评论分页"/>}</>;
+  return <><ResourceError error={resource.error}/>{resource.loading&&!data&&<p>正在加载评论…</p>}{data?.items.map(comment=><blockquote key={comment.id}><strong>{comment.author||'未知作者'}</strong>{privateMessages&&<small> · {comment.direction==='outgoing'?'发出':'收到'} · {time(comment.createdAt)} · {({text:'文字',image:'图片',withdrawn:'已撤回',card:'系统卡片',other:'其他消息'})[comment.messageType]??'其他消息'}</small>}{comment.parent&&<small> · 回复 {comment.parent}</small>}<p>{comment.excerpt}</p><ImageGallery itemId={decodeURIComponent(root.slice(6))} version={version} commentId={comment.id} images={comment.images}/><Expandable title={privateMessages?"查看此消息全文":"查看此评论全文"}><ContentChunks path={`${root}/content?version=${encodeURIComponent(version)}&section=comment&commentId=${encodeURIComponent(comment.id)}`}/></Expandable></blockquote>)}{data&&<ListPagination pagination={data} pageSize={pageSize} onPage={setPage} onPageSize={value=>{setPage(1);setPageSize(value);}} label={privateMessages?"消息分页":"评论分页"}/>}</>;
 }
 function VersionImages({root,version}) {
   const resource=useRemoteResource(`${root}?version=${encodeURIComponent(version)}`);
   return <><ResourceError error={resource.error}/><ImageGallery itemId={decodeURIComponent(root.slice(6))} version={version} images={resource.data?.payload?.images}/></>;
 }
-function Versions({root}) {
+function Versions({root,privateMessages=false}) {
   const [page,setPage]=useState(1),resource=useRemoteResource(`${root}/versions?page=${page}&pageSize=10`),data=resource.data;
-  return <><ResourceError error={resource.error}/>{data?.items.map(version=><div key={version.version}><p>{time(version.changedAt)} · {version.title}</p>{version.complete?<Expandable title={`查看版本 ${version.version}`}><ContentChunks path={`${root}/content?version=${encodeURIComponent(version.version)}&section=body`}/><VersionImages root={root} version={version.version}/></Expandable>:<p className="dmc-muted">旧记录仅保留版本摘要，没有完整原文。</p>}</div>)}{data&&<ListPagination pagination={data} onPage={setPage} label="版本分页"/>}</>;
+  return <><ResourceError error={resource.error}/>{data?.items.map(version=><div key={version.version}><p>{time(version.changedAt)} · {version.title}</p>{version.complete?<Expandable title={`查看版本 ${version.version}`}><ContentChunks path={`${root}/content?version=${encodeURIComponent(version.version)}&section=body`}/><VersionImages root={root} version={version.version}/>{privateMessages&&<Comments root={root} version={version.version} privateMessages/>}</Expandable>:<p className="dmc-muted">旧记录仅保留版本摘要，没有完整原文。</p>}</div>)}{data&&<ListPagination pagination={data} onPage={setPage} label="版本分页"/>}</>;
 }
 function Drafts({root,source,revision,pending,action}) {
   const [page,setPage]=useState(1),resource=useRemoteResource(`${root}/drafts?page=${page}&pageSize=10`,{revision,pollMs:5000}),data=resource.data;

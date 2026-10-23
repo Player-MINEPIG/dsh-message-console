@@ -1,3 +1,4 @@
+import { canDraft, isPrivateSource } from './content-capabilities.js';
 import { learningHash, validateFeedback, applyLearningChanges, learningConfigurationFields } from "./learning.js";
 import { assembleInput, serializeInput, validateInputStage, previewExtras } from "./input-assembly.js";
 import { prepareSource, postHistoryText } from "./source-context.js";
@@ -18,6 +19,7 @@ const errorText = (error) => String(error?.publicMessage ?? error?.message ?? er
 const connectorIdentity = connector => connector?.status?.().identity?.id ?? null;
 const roles = ["writer", "review", "investigate", "decision-escalation", "supervisor", "human"];
 const analysisRoles = ["writer", "review", "investigate"];
+const manualSettings = (global,source) => ({...valuesOf(resolveSettings(global,source)),...(isPrivateSource(source)?{writerProvider:global.writerProvider??PARAMETERS.writerProvider.default,writerModel:global.writerModel??PARAMETERS.writerModel.default}:{})});
 function validateAnalysis(a) {
   if (!a || typeof a.summary !== "string" || typeof a.reason !== "string" || !Number.isInteger(a.importance) || a.importance < 0 || a.importance > 3 || typeof a.urgent !== "boolean" || !["none", "human", "review"].includes(a.intervention) || !["confirmed", "inferred", "insufficient"].includes(a.evidence) || a.urgencyReason != null && typeof a.urgencyReason !== "string" || a.urgent && !a.urgencyReason?.trim()) throw new Error("分析结果不符合约定结构");
 }
@@ -41,7 +43,8 @@ class ConsoleService {
     return this.store.directory;
   }
   #sourceView(source) {
-    return { ...source, effective: resolveSettings(this.store.settings(), source), connection: this.connectors[source.platform]?.status?.() ?? { ready: false, reason: "连接器不可用" } };
+    const connection=this.connectors[source.platform]?.status?.() ?? { ready: false, reason: "连接器不可用" };
+    return { ...source, effective: resolveSettings(this.store.settings(), source), connection: isPrivateSource(source) ? {...connection,canPublish:false,reason:connection.ready?"Chrome Cookie · 私信只读采集":connection.reason} : connection };
   }
   overview(query = {}) {
     const sources = this.store.overviewSources().map((source) => {
@@ -113,6 +116,11 @@ class ConsoleService {
   async saveSource(input, id) {
     const valid = validateSource(input), prepared = await this.#prepare(valid), old = id ? required(this.store.source(id), "来源") : null;
     if (old && (old.platform !== valid.platform || old.target !== valid.target || JSON.stringify(old.types) !== JSON.stringify(valid.types))) throw new Error("更换平台、目标或类型请新建来源，以建立独立基线。");
+    if(isPrivateSource(valid)) {
+      const identity=await required(this.connectors.bilibili,'B站连接器').identity();
+      if(old?.accountId && old.accountId!==identity.id)throw new Error('B站登录账号与私信来源绑定账号不一致，请恢复原账号Cookie');
+      valid.accountId=old?.accountId??identity.id;
+    }
     return this.store.saveSource({ ...old, ...valid, id: id ?? randomUUID(), initialized: old?.initialized ?? false, createdAt: old?.createdAt ?? nowISO(this.clock), contextVersion: prepared.contextVersion, ...input.revision !== void 0 ? { expectedRevision: input.revision } : {} });
   }
   async previewInput({ source: input, sourceId, itemId, stage = "generation" }) {
@@ -146,7 +154,7 @@ class ConsoleService {
   }
   async startLearning({ sourceId } = {}) {
     const source = required(this.store.source(sourceId), "来源"), settings = this.store.settings(), prepared = await this.#prepare(source, void 0, settings);
-    const batch = this.store.createLearning({ id: randomUUID(), sourceId, workspaceId: source.workspaceId, sourceSnapshot: source, preparedSource: prepared, settingsSnapshot: settings, effectiveSettings: valuesOf(resolveSettings(settings, source)), baseSourceRevision: source.revision, baseSettingsHash: learningHash(settings), baseContextVersion: prepared.contextVersion, createdAt: nowISO(this.clock) });
+    const batch = this.store.createLearning({ id: randomUUID(), sourceId, workspaceId: source.workspaceId, sourceSnapshot: source, preparedSource: prepared, settingsSnapshot: settings, effectiveSettings: manualSettings(settings, source), baseSourceRevision: source.revision, baseSettingsHash: learningHash(settings), baseContextVersion: prepared.contextVersion, createdAt: nowISO(this.clock) });
     if (batch.status === "queued") this.#launchLearning(batch.id);
     return this.learning(batch.id);
   }
@@ -286,7 +294,7 @@ class ConsoleService {
         const controller = new AbortController();
         this.#aborts.add(controller);
         try {
-          const batch = await connector.fetch(source, { signal: controller.signal });
+          const batch = await connector.fetch(source, { signal: controller.signal, readPreviousItem: remoteId => this.store.item(`${source.id}:${remoteId}`) });
           if (!batch.complete || !Array.isArray(batch.items)) throw new Error("抓取不完整，本轮不推进基线");
           const seen = /* @__PURE__ */ new Set();
           for (const entry of batch.items) {
@@ -397,7 +405,7 @@ class ConsoleService {
       if (existing) return { sessionId: existing.sessionId };
       const run = this.#newRun(source, item, prepared, "human");
       try {
-        const sessionId = await this.executor.conversation({ runId: run.id, item, source: prepared, settings: valuesOf(resolveSettings(this.store.settings(), source)) });
+        const sessionId = await this.executor.conversation({ runId: run.id, item, source: prepared, settings: manualSettings(this.store.settings(), source) });
         return { sessionId };
       } catch (error) {
         this.store.updateRun(run.id, { status: "failed", error: errorText(error) });
@@ -411,6 +419,7 @@ class ConsoleService {
     if (input.workspaceId !== run.workspaceId || source.workspaceId !== input.workspaceId || typeof input.cwd !== "string" || !input.cwd) throw new Error("会话工作区不匹配");
     let extra = {};
     if (input.role === "supervisor") {
+      if(!canDraft(this.store.header(run.itemId).kind))throw new Error("此内容类型不支持监督");
       const draft = required(this.store.draft(input.draftId), "草稿");
       if (draft.runId !== run.id) throw new Error("监督草稿归属不匹配");
       extra = { bodyHash: draft.bodyHash };
@@ -474,6 +483,8 @@ class ConsoleService {
     if (!submission || typeof submission.operationKey !== "string" || !submission.operationKey.trim() || submission.operationKey.length > 160) throw new Error("提交需要有效操作键");
     const allowed = binding.role === "supervisor" ? "supervision" : binding.role === "decision-escalation" ? "decision" : binding.role === "human" ? "draft" : "analysis";
     if (submission.kind !== allowed) throw new Error("会话角色无权提交此结果");
+    const kind=this.store.header(run.itemId).kind;
+    if(!canDraft(kind)&&(submission.kind==='draft'||submission.kind==='supervision'||submission.draftBody!=null))throw new Error('此内容类型不支持拟稿或监督');
     if (submission.kind === "analysis") {
       validateAnalysis(submission.analysis);
       if (submission.draftBody !== void 0 && submission.draftBody !== null && typeof submission.draftBody !== "string") throw new Error("草稿正文无效");
@@ -580,6 +591,7 @@ class ConsoleService {
     if (submission.operationKey.length > 160 || JSON.stringify(submission).length > 2e5) throw new Error("提交结果过大或操作键过长");
     actor.assertWritable?.();
     const currentItem = required(this.store.header(submission.itemId), "内容项");
+    if(!canDraft(currentItem.kind))throw new Error("此内容类型不支持拟稿");
     const { source, workspace } = await this.#workspaceSource(actor, currentItem.sourceId);
     this.#assertWorkspaceSource(source);
     const replay = this.store.replaySubmission(String(actor.sessionId), submission);
@@ -616,6 +628,7 @@ class ConsoleService {
   async superviseDraft(id, { bodyHash } = {}) {
     return this.#job(`supervise:${id}`, async () => {
       const draft = required(this.store.draft(id), "草稿");
+      if(!canDraft(this.store.header(draft.itemId).kind))throw new Error("此内容类型不支持监督");
       if (draft.bodyHash !== bodyHash || !["pending-supervision", "blocked"].includes(draft.status)) throw new Error("草稿已变化或不等待监督");
       const item = required(this.#runItem(required(this.store.run(draft.runId), "运行记录")), "内容项"), source = required(this.store.source(draft.sourceId), "来源"), prepared = await this.#prepare(source);
       if (prepared.contextVersion !== draft.contextVersion || this.store.header(item.id).version !== draft.version) {
@@ -653,6 +666,7 @@ class ConsoleService {
   async #publish(id, { version, bodyHash }, { automatic = false, signal } = {}) {
     return this.#job(`publish:${id}`, async () => {
       const draft = required(this.store.draft(id), "草稿"), item = required(this.store.item(draft.itemId), "内容项"), source = required(this.store.source(draft.sourceId), "来源"), prepared = await this.#prepare(source);
+      if(!canDraft(item.kind))throw new Error("此内容类型不支持发布");
       if (draft.contextVersion !== prepared.contextVersion) throw new Error("来源资料已变化，请重新整理并审核");
       if (draft.status !== "ready" || !draft.supervision?.approved) throw new Error("此草稿未通过监督或不处于待审核状态");
       if (this.store.hasUncertain(item.id, id)) throw new Error("此内容项有发送结果尚未确认，请先核实远端，避免重复发布");

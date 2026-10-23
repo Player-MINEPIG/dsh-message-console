@@ -1,3 +1,4 @@
+import { canDraft } from './content-capabilities.js';
 import { modelRoute } from './model-selection.js';
 import { assembleInput, serializeInput } from './input-assembly.js';
 import { postHistoryText, learningGuidanceText } from './source-context.js';
@@ -26,9 +27,24 @@ export function validateDecision(result) {
   return { importance: ranked ? Number(ranked[0][0]) : 1, importanceAvailable: Boolean(ranked), choice: rows[0][0], confidence: rows[0][1], margin: rows[0][1] - rows[1][1], probabilities };
 }
 
+export function validateImportance(result) {
+  const probabilities=result?.answers?.importance?.probabilities;
+  if(!probabilities||Array.isArray(probabilities)||Object.keys(probabilities).length!==4||Object.keys(IMPORTANCE).some(key=>typeof probabilities[key]!=='number'||!Number.isFinite(probabilities[key])||probabilities[key]<0||probabilities[key]>1)||Math.abs(Object.values(probabilities).reduce((a,b)=>a+b,0)-1)>.02)throw new Error('重要程度概率不完整或未归一化');
+  const ranked=Object.entries(probabilities).sort((a,b)=>b[1]-a[1]);
+  return {importance:Number(ranked[0][0]),confidence:ranked[0][1],margin:ranked[0][1]-ranked[1][1],probabilities};
+}
 export class WorkflowExecutor {
   constructor({ decision, runAgent, conversation, catalog, models, prepareImages }) { Object.assign(this, { decision, runAgent, conversation, catalog, models, prepareImages }); }
   async analyze({ runId, source, item, settings, signal, recordSession, recordDecision }) {
+    if(item.kind==='private-message') {
+      const request={...(settings.decisionProfile?{provider:settings.decisionProfile}:{}),state:serializeInput(assembleInput(source,item,{language:settings.language,stage:'decision'})),questions:{importance:{type:'choice',instructions:postHistoryText(source)+'\n'+learningGuidanceText(source)+'\n仅评定给定消息范围对用户的重要程度。不生成回复、不推断紧急性，不把媒体占位当作已读媒体；未提供的上下文未知。',criteria:IMPORTANCE}}};
+      let output,decision;
+      try { output=await this.decision(request,{signal});decision=validateImportance(output); }
+      catch(error) {await recordDecision({input:request,...(output===undefined?{}:{output}),error:String(error.message)});throw error;}
+      const certain=decision.confidence>=settings.decisionConfidence&&decision.margin>=settings.decisionMargin;
+      await recordDecision({input:request,output,resolved:{...decision,certain}});
+      return {processing:'decision-only',summary:'已评定最近消息的重要程度；未生成内容摘要或回复。',importance:decision.importance,urgent:false,intervention:'none',evidence:certain?'inferred':'insufficient',reason:`重要程度概率 ${Object.entries(decision.probabilities).map(([key,value])=>`${key}级 ${(value*100).toFixed(1)}%`).join('，')}。${certain?'':'概率未达到置信阈值，仅保留当前最高概率等级；未推测具体原因。'}`,decision:{...decision,certain}};
+    }
     if(item.payload?.contextComplete === false) return {processing:'context-incomplete',summary:'已采集部分上下文，需要打开原始来源补充后再分析。',importance:1,urgent:false,reason:item.payload.contextLimit??'原始讨论未完整取得',intervention:'human',evidence:'insufficient'};
     const hasImages = containsImages(item);
     const inputFor = stage => ({ ...assembleInput(source, item, { language: settings.language, stage }), ...(item.kind === 'comment' ? { replyPolicy: { automaticAllowed: source.autoReply === true, ownAccountId: source.replyAccountId ?? null, disclosure: AUTO_REPLY_PREFIX, rule: AUTO_REPLY_REVIEW_RULE } } : {}) });
@@ -86,6 +102,7 @@ export class WorkflowExecutor {
     return result;
   }
   async supervise({ runId, draft, source, item, settings, signal, recordSession, decision }) {
+    if(!canDraft(item.kind))throw new Error("此内容类型不支持监督");
     const route = modelRoute(settings, true);
     if (!route.provider || !route.model) throw new Error('独立监督需要模型路由，请选择监督模型或生成/分析模型');
     return this.runAgent({ runId, draftId: draft.id, workspaceId: source.workspaceId, postHistoryInstruction: postHistoryText(source), role: 'supervisor', instructions: `${COMMON}\n${learningGuidanceText(source)}\n你是独立监督者。检查拟发送内容是否有事实依据、遗漏问题、擅自表态/承诺、语气不符。${draft.automatic ? AUTO_REPLY_REVIEW_RULE : ''} 检查 replyToCommentId 指向的具体评论和回复是否匹配。上下文不足或无法判断也不通过。不修改草稿。调用 dmc_submit_result 保存 kind=supervision、approved、reason。`, input: { ...assembleInput(source, item, { language: settings.language, stage: 'supervision' }), draft: draft.body, replyToCommentId: draft.replyToCommentId ?? null, automatic: draft.automatic === true, ...(decision ? { decision } : {}) }, ...route, signal, onSession: id => recordSession?.('supervisor', id), title: `${source.name} · ${item.title} · supervisor` });

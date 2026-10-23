@@ -1,3 +1,4 @@
+import { canDraft, isPrivateSource } from './content-capabilities.js';
 import { mkdir, open, readFile, unlink, rmdir, copyFile, chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -270,6 +271,11 @@ class Store {
   saveSource(source) {
     return this.#transaction(() => {
       const old = this.source(source.id);
+      if(isPrivateSource(source)) {
+        if(typeof source.accountId!=='string'||!(/^[1-9]\d*$/).test(source.accountId))throw new Error('私信来源必须绑定账号');
+        if(old?.accountId&&old.accountId!==source.accountId)throw new Error('私信来源绑定账号不可更改');
+        if(this.sources().some(other=>other.id!==source.id&&isPrivateSource(other)))throw new Error('已存在统一B站私信来源（包括已停用来源），请编辑原来源');
+      }
       if (old && source.expectedRevision !== void 0 && old.revision !== source.expectedRevision) throw new Error("来源配置已变化，请刷新后保存");
       const saved = { ...source, revision: (old?.revision ?? 0) + 1 };
       delete saved.expectedRevision;
@@ -301,7 +307,7 @@ class Store {
     this.#run(`INSERT INTO items(id,source_id,remote_id,kind,version,previous_version,read_version,analyzed_version,context_version,handling,changed_at,analysis,data) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,previous_version=excluded.previous_version,read_version=excluded.read_version,analyzed_version=excluded.analyzed_version,context_version=excluded.context_version,handling=excluded.handling,changed_at=excluded.changed_at,analysis=excluded.analysis,data=excluded.data`, item.id, item.sourceId, item.remoteId, item.kind, item.version, item.previous?.version ?? null, item.readVersion ?? null, item.analyzedVersion ?? null, item.analyzedContextVersion ?? null, item.handling ?? "none", item.changedAt ?? "", item.analysis ? json(item.analysis) : null, json(extras));
   }
   #version(item, complete) {
-    this.#run("INSERT OR IGNORE INTO item_versions(item_id,version,title,body,url,payload,changed_at,complete,data,metadata) VALUES(?,?,?,?,?,?,?,?,?,?)", item.id, item.version, item.title ?? "", item.body ?? "", item.url ?? null, item.payload ? json(item.payload) : null, item.changedAt ?? null, complete ? 1 : 0, json({ ...Object.fromEntries(Object.entries(item).filter(([key]) => !["id", "version", "changedAt", "title", "body", "payload", "url", "analysis", "sessions", "previous"].includes(key))), previousVersion: item.previous?.version ?? null }), json({ ...(item.payload?.images?.length ? { images: item.payload.images } : {}), state: item.payload?.state, merged: item.payload?.merged, contextComplete: item.payload?.contextComplete, contextLimit: item.payload?.contextLimit, diffLength:0, ...item.payload?.video ? { video: { title: item.payload.video.title, owner: item.payload.video.owner, descriptionLength:0 } } : {} }));
+    this.#run("INSERT OR IGNORE INTO item_versions(item_id,version,title,body,url,payload,changed_at,complete,data,metadata) VALUES(?,?,?,?,?,?,?,?,?,?)", item.id, item.version, item.title ?? "", item.body ?? "", item.url ?? null, item.payload ? json(item.payload) : null, item.changedAt ?? null, complete ? 1 : 0, json({ ...Object.fromEntries(Object.entries(item).filter(([key]) => !["id", "version", "changedAt", "title", "body", "payload", "url", "analysis", "sessions", "previous"].includes(key))), previousVersion: item.previous?.version ?? null }), json({ ...(item.payload?.images?.length ? { images: item.payload.images } : {}), state: item.payload?.state, merged: item.payload?.merged, contextComplete: item.payload?.contextComplete, contextLimit: item.payload?.contextLimit, diffLength:0, ...(item.payload?.contact?{contact:item.payload.contact,collection:item.payload.collection,visibilityLimit:item.payload.visibilityLimit}:{}), ...item.payload?.video ? { video: { title: item.payload.video.title, owner: item.payload.video.owner, descriptionLength:0 } } : {} }));
     this.#run(`UPDATE item_versions SET metadata=CASE WHEN json_type(metadata,'$.video')='object' THEN json_set(metadata,'$.diffLength',coalesce(length(json_extract(payload,'$.diff')),0),'$.video.descriptionLength',coalesce(length(json_extract(payload,'$.video.description')),0)) ELSE json_set(metadata,'$.diffLength',coalesce(length(json_extract(payload,'$.diff')),0)) END WHERE item_id=? AND version=?`,item.id,item.version);
     let ordinal = 0;
     for (const comment of [...item.payload?.comments ?? [], ...item.payload?.reviewComments ?? []]) {
@@ -403,7 +409,7 @@ class Store {
   #card(row) {
     const item = this.#itemState(row), payload = { ...parse(row.payload), ...row.remote_state ? { state: row.remote_state } : {}, ...row.remote_merged !== void 0 && row.remote_merged !== null ? { merged: Boolean(row.remote_merged) } : {} };
     item.organization = this.#organization(item);
-    return { ...item, updatedAt: row.updated_at ?? remoteTime(item.updatedAt) ?? item.changedAt, title: row.title, url: row.url, analysis: currentAnalysis(item), priority: row.priority, needsHandling: Boolean(row.needs_handling), status: row.needs_handling ? "handling" : row.unread ? "unread" : "read", excerpt: row.excerpt, payload: { ...(payload?.images?.length ? { images: payload.images } : {}), ...payload?.state ? { state: payload.state } : {}, ...payload?.merged !== void 0 ? { merged: payload.merged } : {}, ...payload?.contextComplete !== void 0 ? { contextComplete: payload.contextComplete } : {}, ...payload?.contextLimit ? { contextLimit: payload.contextLimit } : {}, ...payload?.video ? { video: payload.video } : {} } };
+    return { ...item, updatedAt: row.updated_at ?? remoteTime(item.updatedAt) ?? item.changedAt, title: row.title, url: row.url, analysis: currentAnalysis(item), priority: row.priority, needsHandling: Boolean(row.needs_handling), status: row.needs_handling ? "handling" : row.unread ? "unread" : "read", excerpt: row.excerpt, payload: { ...(payload?.images?.length ? { images: payload.images } : {}), ...payload?.state ? { state: payload.state } : {}, ...payload?.merged !== void 0 ? { merged: payload.merged } : {}, ...payload?.contextComplete !== void 0 ? { contextComplete: payload.contextComplete } : {}, ...payload?.contextLimit ? { contextLimit: payload.contextLimit } : {}, ...payload?.video ? { video: payload.video } : {}, ...(payload?.contact ? {contact:payload.contact,collection:payload.collection,visibilityLimit:payload.visibilityLimit} : {}) } };
   }
   items(sourceId, input = {}) {
     const source = required(this.source(sourceId), "来源");
@@ -447,7 +453,7 @@ class Store {
     offset = Number(offset);
     length = Number(length);
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > 32e3 || !["body", "comment", "diff", "video-description"].includes(section)) throw new Error("内容区段参数无效");
-    const column = section === "diff" ? "json_extract(payload,'$.diff')" : section === "video-description" ? "json_extract(payload,'$.video.description')" : "body";
+    const column = section === "comment" && item.kind === "private-message" ? "body || CASE WHEN json_extract(data,'$.type')<>1 AND json_extract(data,'$.rawContent') IS NOT NULL THEN char(10)||'平台原始字段（仅文字元信息，未加载媒体）：'||char(10)||json_extract(data,'$.rawContent') ELSE '' END" : section === "diff" ? "json_extract(payload,'$.diff')" : section === "video-description" ? "json_extract(payload,'$.video.description')" : "body";
     const from = section === "comment" ? "comments" : "item_versions";
     const where = section === "comment" ? "item_id=? AND version=? AND id=?" : "item_id=? AND version=?";
     const args = section === "comment" ? [id, version, String(commentId)] : [id, version];
@@ -460,7 +466,7 @@ class Store {
     version ??= row.version;
     required(this.#get("SELECT 1 FROM item_versions WHERE item_id=? AND version=?", id, version), "内容版本");
     const page = this.#page("SELECT count(*) n FROM comments WHERE item_id=? AND version=?", "SELECT id,author,substr(body,1,600) excerpt,length(body) bodyLength,data FROM comments WHERE item_id=? AND version=? ORDER BY ordinal,id LIMIT ? OFFSET ?", [id, version], input);
-    page.items = page.items.map(({ data, ...r }) => ({ ...r, parent: parse(data)?.parent ?? null, updatedAt: parse(data)?.updatedAt ?? null, ...(parse(data)?.images?.length ? { images: parse(data).images } : {}) }));
+    page.items = page.items.map(({ data, ...r }) => ({ ...r, parent: parse(data)?.parent ?? null, updatedAt: parse(data)?.updatedAt ?? null, createdAt: parse(data)?.createdAt ?? null, direction: parse(data)?.direction ?? null, type: parse(data)?.type ?? null, messageType: parse(data)?.messageType ?? null, authorId: parse(data)?.authorId ?? null, ...(parse(data)?.images?.length ? { images: parse(data).images } : {}) }));
     return page;
   }
   versions(id, input = {}) {
@@ -746,6 +752,7 @@ class Store {
     if (replay) return replay;
     if (binding.role !== "human" && this.receipt(binding.sessionId,binding.runId)) throw new Error("此阶段已有持久结果");
     const run = required(this.run(binding.runId), "运行记录"), item = required(this.#itemRow(run.itemId), "内容项"), source = required(this.source(run.sourceId), "来源");
+    if(!canDraft(item.kind)&&(submission.kind==="draft"||submission.kind==="supervision"||submission.draftBody!=null))throw new Error("此内容类型不支持拟稿或监督");
     const fresh = item.version === run.version && currentContext === run.contextVersion && source.contextVersion === run.sourceContextVersion && source.workspaceId === binding.workspaceId;
     const receipt = { id: randomUUID(), sessionId: binding.sessionId, runId: run.id, kind: submission.kind, result: null };
     if (submission.kind === "analysis") {
@@ -753,7 +760,7 @@ class Store {
       receipt.adopted = fresh && this.#adopt(run, receipt.result);
       receipt.analysisId = receipt.id;
       this.#writeRun({ ...run, resultAdopted: receipt.adopted, result: receipt.result });
-      if (item.kind !== "release" && submission.analysis.intervention !== "human" && submission.draftBody?.trim()) receipt.draft = this.#newDraft(run, submission.draftBody, receipt.adopted ? "pending-supervision" : "stale", at, submission.replyToCommentId);
+      if (canDraft(item.kind) && submission.analysis.intervention !== "human" && submission.draftBody?.trim()) receipt.draft = this.#newDraft(run, submission.draftBody, receipt.adopted ? "pending-supervision" : "stale", at, submission.replyToCommentId);
     } else if (submission.kind === "draft") {
       if (submission.replacesDraftId) {
         const old = required(this.draft(submission.replacesDraftId), "旧草稿");
@@ -781,6 +788,7 @@ class Store {
     return receipt;
   }
   #newDraft(run, body, status, at, replyToCommentId) {
+    if(!canDraft(this.#itemRow(run.itemId).kind))throw new Error("此内容类型不支持拟稿");
     const automatic = run.kind === "automatic" && this.source(run.sourceId).autoReply === true && this.#itemRow(run.itemId).kind === "comment";
     if (automatic) body = disclosedReply(body);
     const draft = { id: randomUUID(), itemId: run.itemId, sourceId: run.sourceId, runId: run.id, version: run.version, contextVersion: run.contextVersion, body, automatic, ...(replyToCommentId ? { replyToCommentId } : {}), kind: this.#itemRow(run.itemId).kind === "pr" ? "review" : "reply", status, createdAt: at, supervision: null };
@@ -791,6 +799,7 @@ class Store {
   claimPublication(id, { version, bodyHash, contextVersion, automatic = false }, at) {
     return this.#transaction(() => {
       const draft = required(this.draft(id), "草稿"), item = required(this.#itemRow(draft.itemId), "内容项");
+      if(!canDraft(item.kind))throw new Error("此内容类型不支持发布");
       if (draft.status !== "ready" || !draft.supervision?.approved || item.version !== draft.version || version !== draft.version || draft.bodyHash !== bodyHash || draft.contextVersion !== contextVersion) throw new Error("草稿状态或内容已变化，请重新审核");
       if (this.#get("SELECT 1 FROM drafts WHERE item_id=? AND id<>? AND status IN ('sending','unknown') LIMIT 1", draft.itemId, id)) throw new Error("此内容项有发送结果尚未确认");
       if (automatic) {

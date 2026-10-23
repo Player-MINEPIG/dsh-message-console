@@ -1,10 +1,19 @@
+import { fetchPrivateMessages } from './bilibili-private.js';
 import { commentImages } from '../images.js';
 const pageCount=page=>{if(!Number.isInteger(page?.count)||page.count<0||!Number.isInteger(page.size)||page.size<1)throw new Error('B站分页计数缺失或无效');return page.count;};
 export class BilibiliConnector {
   constructor(transport,{maxPages=200}={}) { this.transport=transport;this.maxPages=maxPages; }
   status(){return this.transport.status('bilibili');}
   async call(path,params,options) { return this.transport.json('bilibili',`https://api.bilibili.com${path}?${new URLSearchParams(params)}`,options); }
+  async identity(options={}) {
+    const value=await this.call('/x/web-interface/nav',{},options);
+    if(!value.isLogin||!Number.isSafeInteger(Number(value.mid))||Number(value.mid)<1)throw new Error('B站Cookie已失效，请重新导入');
+    const identity={id:String(value.mid),name:value.uname};
+    this.transport.identities.bilibili=identity;
+    return identity;
+  }
   async metadata(source,options={}){
+    if(source.types?.includes('private-message')) { const identity=await this.identity(options);return {name:`${identity.name||'B站'}的私信`,description:'统一查看联系人私信，仅评定重要程度，不拟回复。',tags:['私信'],access:'cookie',note:'保存时绑定当前账号。初次采集每位联系人最近100条，后续累积新增消息。'}; }
     const video=await this.call('/x/web-interface/view',source.target.startsWith('BV')?{bvid:source.target}:{aid:source.target.slice(2)},options);
     if(typeof video.title!=='string'||typeof video.desc!=='string'||!Number.isSafeInteger(video.aid)||video.aid<1||source.target.startsWith('BV')&&video.bvid!==source.target||source.target.startsWith('av')&&String(video.aid)!==source.target.slice(2))throw new Error('B站视频元信息结构不完整或目标不匹配');
     const categories=[...new Set([video.tname,video.tname_v2].filter(name=>typeof name==='string'&&name.trim()).map(name=>name.trim()))];
@@ -23,6 +32,7 @@ export class BilibiliConnector {
     return {name:video.title,description:video.desc,tags:[...tags,...categories],access:'cookie',note};
   }
   async fetch(source,options={}) {
+    if(source.types?.includes('private-message'))return fetchPrivateMessages(this,source,options);
     const identity=await this.call('/x/web-interface/nav',{},options);
     if(!identity.isLogin)throw new Error('B站Cookie已失效，请重新导入');
     this.transport.identities.bilibili={id:String(identity.mid),name:identity.uname};

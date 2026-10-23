@@ -7,6 +7,7 @@ import { installAgentTools } from '../src/agent-tools.js';
 import { createDshWorkspaces } from '../src/dsh.js';
 import { Store } from '../src/store.js';
 import { ConsoleService } from '../src/core.js';
+import { POST_HISTORY_GUARD } from '../src/source-context.js';
 
 const root = process.env.DMC_DSH_ROOT;
 test('ordinary PTC workspace sessions discover, query and save multiple drafts across active attachment and cold resume', { skip: !root, timeout: 30000 }, async () => {
@@ -21,7 +22,7 @@ test('ordinary PTC workspace sessions discover, query and save multiple drafts a
       async resolveModel(provider, id) { return { provider, id, name: id }; }
       async *stream(request) {
         requests.push(structuredClone(request));
-        const last = request.messages.at(-1);
+        const last = request.messages.findLast(message=>!message.content.some(block=>block.type==='text'&&block.text.startsWith(POST_HISTORY_GUARD)));
         if (last?.role === 'tool') {
           executions.push(last.content[0].text);
           yield { type: 'block-start', index: 0, blockType: 'text' };
@@ -41,8 +42,10 @@ test('ordinary PTC workspace sessions discover, query and save multiple drafts a
     assert.equal(store.sessionBinding(String(active.agent.session.id)), null);
     await installAgentTools(ctx, service);
     const send = async (handle, code) => {
+      const priorExecutions=executions.length;
       plans.push(code); handle.agent.followup(llm.createUserMessage({ source: { kind: 'offline-test', form: 'instructions' }, content: [{ type: 'text', text: '执行本轮已安排的离线工具验收' }] }));
       await handle.agent.whenIdle(); await ctx.sessions.flush(handle.agent.session);
+      assert.ok(executions.length>priorExecutions,`tool execution must advance for ${String(handle.agent.session.id)}; last model ${requests.at(-1)?.model}`);
       const result = executions.at(-1); assert.ok(result); return result;
     };
     assert.ok(ctx.tools.schemas(active.agent).some(t => t.name === 'dmc_read_item'));
@@ -105,5 +108,21 @@ test('ordinary PTC workspace sessions discover, query and save multiple drafts a
     assert.match(await send(active, callSave(firstInput)), /当前已有工作区/, 'a receipt cannot be replayed after source leaves workspace');
     unregistered = await ctx.agents.create({ sessionId: sessions.SessionId('outside-workspaces'), meta: { cwd: '/', agentPreset: 'ptc' }, agentOptions: { provider: 'offline-workspace', model: 'outside' }, async setup(agentCtx) { await ctx.agentPresets.mount(agentCtx, 'ptc'); } });
     assert.deepEqual(JSON.parse(await send(unregistered, 'return await tools.dmc_read_item({section:"sources"});')).sources, []);
+    service.connectors.bilibili.identity=async()=>({id:'10',name:'合成账号'});
+    const privateSource=await service.saveSource({workspaceId:registeredWorkspace.id,name:'合成私信',platform:'bilibili',target:'private-messages',types:['private-message']});
+    store.applyFetch(privateSource.id,[{remoteId:'private-message:20',kind:'private-message',title:'私信联系人',body:'PM_BODY',payload:{comments:[{id:'1',author:'合成联系人',direction:'incoming',createdAt:'2026-01-01T00:00:00.000Z',type:1,body:'PM_FULL_TEXT'}]}}],{},new Date().toISOString(),()=> 'pm-version');
+    const privateItem=service.items(privateSource.id).items[0];
+    const privateCheck=await send(fresh,`const original=await tools.dmc_read_item({itemId:${JSON.stringify(privateItem.id)},section:'comment',commentId:'1'});let refusal;try {await tools.dmc_submit_result(${JSON.stringify({...save(privateItem,'private-refused'),contextVersion:store.source(privateSource.id).contextVersion})});}catch(error){refusal=String(error);}return {original,refusal};`);
+    assert.match(privateCheck,/PM_FULL_TEXT/);assert.match(privateCheck,/不支持拟稿/);
+    assert.equal(service.drafts(privateItem.id).total,0);assert.equal(service.runs(privateItem.id).total,0);
+    await service.configure({writerProvider:'offline-workspace',writerModel:'private-reading'});
+    const owner=await f.executorOwner(service);service.executor=owner.executor;
+    const conversation=await service.openConversation(privateItem.id),agent=ctx.agents.get(sessions.SessionId(conversation.sessionId));
+    assert.ok(ctx.tools.schemas(agent).some(tool=>tool.name==='dmc_read_item'));
+    assert.equal(ctx.tools.schemas(agent).some(tool=>tool.name==='dmc_submit_result'),false,'private managed reading has no drafting tool');
+    assert.match(await send({agent},'return await tools.dmc_read_item({section:"comment",commentId:"1"});'),/PM_FULL_TEXT/);
+    assert.match(JSON.stringify(requests.at(-1)),/不得拟稿、保存回复/);
+    await owner.dispose();
+
   } finally { await active?.dispose(); await fresh?.dispose(); await unregistered?.dispose(); await service.close(); await rm(directory, { recursive: true, force: true }); await f.close(); }
 });
