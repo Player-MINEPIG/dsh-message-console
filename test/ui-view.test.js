@@ -132,7 +132,7 @@ test('work record preserves failed stage and separately presents later saved ana
  const props=run=>({run,item:{kind:'issue'},openSession(){}}),html=render(WorkRecord,props(failed)),normalHtml=render(WorkRecord,props(normal)),lateHtml=render(WorkRecord,props(lateDraft));
  assert.match(html,/定时触发 · 失败/);assert.match(html,/TIMEOUT/);assert.match(html,/取消来源 阶段超时/);assert.match(html,/限时 5分钟/);assert.match(html,/后续已保存分析/);assert.match(html,/当时已采纳/);assert.doesNotMatch(html,/300000|监督通过/);assert.match(normalHtml,/业务结果/);assert.match(normalHtml,/监督通过，待发布审核/);assert.doesNotMatch(normalHtml,/后续已保存|阶段终止/);assert.match(lateHtml,/草稿待独立监督/);assert.doesNotMatch(lateHtml,/监督通过/);
  const css=await readFile('src/style.css','utf8');
- await writeFile('.local/session-reuse-20261021/work-records-preview.html',`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>工作记录 · 隔离合成验收</title><style>${css}</style><body><main class="dmc" style="max-width:900px;margin:36px auto"><h1>工作记录 · 隔离合成验收</h1><p>全部为合成记录，没有连接生产或真实会话。</p><h2>阶段5分钟失败后补交分析</h2>${html}<h2>正常分析与独立监督</h2>${normalHtml.replace('<details','<details open')}<h2>异步补交草稿仍待监督</h2>${lateHtml}</main></body></html>`);
+ await writeFile(join(directory,'work-records-preview.html'),`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>工作记录 · 隔离合成验收</title><style>${css}</style><body><main class="dmc" style="max-width:900px;margin:36px auto"><h1>工作记录 · 隔离合成验收</h1><p>全部为合成记录，没有连接生产或真实会话。</p><h2>阶段5分钟失败后补交分析</h2>${html}<h2>正常分析与独立监督</h2>${normalHtml.replace('<details','<details open')}<h2>异步补交草稿仍待监督</h2>${lateHtml}</main></body></html>`);
 });
 
 test('outer comment card highlights changed replies, preserves root context and distinguishes whole-thread suggestions',()=>{

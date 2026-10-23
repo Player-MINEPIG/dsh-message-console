@@ -14,6 +14,7 @@ const submission = { kind: 'analysis', operationKey: 'result', analysis, draftBo
 
 test('stock host scopes actual tools, workspace permissions, AGENTS and durable result submission across cold resume', { skip: !root, timeout: 30_000 }, async () => {
   const f = await hostFixture(root), { ctx, llm, sessions, workspace, registeredWorkspace, load } = f;
+  const escapedRoot = await mkdtemp(join(resolve('.local'), 'host-escape-'));
   const bindings = new Map(), receipts = new Map(), writes = [], requests = [], counts = new Map(), ids = [];
   const service = {
     storageDirectory:()=>resolve('.local'),
@@ -96,7 +97,7 @@ test('stock host scopes actual tools, workspace permissions, AGENTS and durable 
     await assert.rejects(ctx.fs.writeText(inside, 'forbidden', undefined, undefined, ctx.sandboxPolicy.resolve({ session: cold.agent.session })), e => e.code === 'FS_SANDBOX_DENIED');
     setSandboxMode(cold.agent.session, 'workspace-write');
     await ctx.fs.writeText(inside, 'allowed', undefined, undefined, ctx.sandboxPolicy.resolve({ session: cold.agent.session })); assert.equal(await readFile(join(workspace, 'notes.txt'), 'utf8'), 'allowed');
-    const escapedRoot = resolve('.local/tools-storage-20261018'); await symlink(escapedRoot, join(workspace, 'escape'));
+    await symlink(escapedRoot, join(workspace, 'escape'));
     for (const path of [join(escapedRoot, 'NEVER-WRITE-HOST'), join(workspace, 'escape', 'NEVER-WRITE-HOST')]) await assert.rejects(ctx.fs.writeText(await ctx.fs.resolve(path), 'forbidden', undefined, undefined, ctx.sandboxPolicy.resolve({ session: cold.agent.session })), e => e.code === 'FS_SANDBOX_DENIED');
     const plan = ctx.agentPresets.serviceFor(cold.agent, 'planMode');
     assert.equal(cold.agent.ctx.get('planMode'), undefined); plan.set(cold.agent, true);
@@ -114,7 +115,7 @@ test('stock host scopes actual tools, workspace permissions, AGENTS and durable 
     await cold.agent.whenIdle(); await ctx.sessions.flush(cold.agent.session);
     assert.equal(writes.at(-1).value.kind, 'draft'); assert.equal(counts.get('human'), 2, 'human save leaves room for a conversational response');
     await cold.dispose();
-  } finally { await f.close(); }
+  } finally { await f.close(); await rm(escapedRoot, { recursive: true, force: true }); }
 });
 
 test('PTC host tools read collected comments and commit immutable drafts and independent supervision to SQLite', { skip: !root, timeout: 30_000 }, async () => {
