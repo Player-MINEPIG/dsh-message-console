@@ -1,0 +1,133 @@
+name: Project checks
+
+on:
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        options: [verify, promote]
+        default: verify
+        required: true
+      candidate_sha:
+        description: Exact dev commit to verify or promote
+        type: string
+        required: true
+      verification_run_id:
+        description: Successful manual verify run ID (promote only)
+        type: string
+      acceptance_record:
+        description: Actual Linux device acceptance and evidence (promote only)
+        type: string
+      user_confirmation:
+        description: Actual user approval or evidence link (promote only)
+        type: string
+      confirm:
+        description: Device acceptance passed and user authorized main promotion
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ inputs.operation == 'promote' && 'main-promotion' || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ inputs.operation != 'promote' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TZ: UTC
+  DSH_TELEMETRY_DISABLED: '1'
+  DMC_DSH_ROOT: ${{ github.workspace }}/.local/ci/dsh-host
+
+jobs:
+  linux:
+    name: Linux
+    if: ${{ github.event_name == 'pull_request' || inputs.operation == 'verify' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+          cache: npm
+      - name: Check fixed verification candidate
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: node scripts/ci/promote.js verify
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      - run: npm ci --no-audit --no-fund
+      - run: npm run setup:runtime
+      - name: Run normal tests including real DSH and PTC
+        run: npm run test:ci
+      - run: npm run build
+      - name: Pack and verify installed files and entry points
+        run: npm run test:package
+      - uses: actions/upload-artifact@v4
+        if: ${{ github.event_name == 'workflow_dispatch' && success() }}
+        with:
+          name: candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/ci/candidate/
+          retention-days: 30
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/ci/tests.tap
+          retention-days: 7
+
+  promote:
+    name: Promote main
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'promote' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      statuses: write
+      actions: read
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      VERIFICATION_RUN_ID: ${{ inputs.verification_run_id }}
+      ACCEPTANCE_RECORD: ${{ inputs.acceptance_record }}
+      USER_CONFIRMATION: ${{ inputs.user_confirmation }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.0'
+      - name: Resolve successful candidate artifact
+        id: candidate
+        run: node scripts/ci/promote.js resolve
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.candidate.outputs.artifact_id }}
+          run-id: ${{ inputs.verification_run_id }}
+          github-token: ${{ github.token }}
+          path: .local/ci/candidate
+          merge-multiple: true
+      - name: Validate candidate and record acceptance
+        run: node scripts/ci/promote.js record
+      - uses: actions/upload-artifact@v4
+        id: record
+        with:
+          name: promotion-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/ci/candidate/promotion.json
+          retention-days: 90
+          if-no-files-found: error
+      - name: Fast-forward main to the tested candidate
+        run: node scripts/ci/promote.js promote
+        env:
+          RECORD_ARTIFACT_ID: ${{ steps.record.outputs.artifact-id }}
+          RECORD_ARTIFACT_DIGEST: ${{ steps.record.outputs.artifact-digest }}
