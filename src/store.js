@@ -725,12 +725,11 @@ class Store {
       const replay = this.replaySubmission(binding.sessionId, submission, binding.runId);
       if (replay) return replay;
       const original = required(this.run(binding.runId), "运行记录"), first = this.receipt(binding.sessionId,binding.runId);
-      if (!first || first.kind !== "analysis") throw new Error("本会话尚未提交分析，请先使用 dmc_submit_result");
       const item = required(this.#itemRow(original.itemId), "内容项"), source = required(this.source(original.sourceId), "来源");
-      if (item.version !== original.version || item.version !== submission.version || source.contextVersion !== original.sourceContextVersion || source.contextVersion !== run.sourceContextVersion || source.workspaceId !== binding.workspaceId || run.contextVersion !== original.contextVersion) throw new Error("内容或来源资料已变化，请重新整理当前内容以启动新轮");
-      if (!item.analysis || item.analysis_revision !== submission.expectedAnalysisRevision) throw new Error("分析已变化，请重新读取 analysis 后修订");
+      if (binding.sourceId !== source.id || binding.itemId !== item.id || run.sourceId !== source.id || run.itemId !== item.id) throw new Error("会话来源或内容绑定不匹配");
+      run = { ...run, version: item.version, baseAnalysisRevision: item.analysis_revision };
       const result = { ...submission.analysis, processing: "analysis" };
-      const revision = { ...run.revision, originalReceiptId: first.id, previousAnalysisRevision: item.analysis_revision, previousAnalysis: parse(item.analysis) };
+      const revision = { ...run.revision, ...(first?.kind === "analysis" ? { originalReceiptId: first.id } : {}), previousAnalysisRevision: item.analysis_revision, previousAnalysis: parse(item.analysis) };
       if (!this.#adopt(run, result)) throw new Error("分析已变化，请重新读取 analysis 后修订");
       const invalidatedDraftIds = this.#all("SELECT id FROM drafts WHERE item_id=? AND status IN ('pending-supervision','ready','blocked')", original.itemId).map(row => row.id);
       for (const id of invalidatedDraftIds) this.#updateDraft(id, { status: "stale" });

@@ -29,7 +29,7 @@ test('cold original Agent revises an analysis through real PTC with permissions 
         else if (calls === 3) {
           const current = JSON.parse(request.messages.findLast(message => message.role === 'tool').content[0].text);
           assert.equal(current.analysis.summary, analysis.summary);
-          revisionInput = { operationKey: 'completion-report', version: current.version, contextVersion: current.contextVersion, expectedAnalysisRevision: current.analysisRevision, analysis: { ...analysis, summary: '验证完成：已确认问题', evidence: 'confirmed' }, reason: '收到验证报告', evidenceRefs: ['report:offline-fixture'] };
+          revisionInput = { operationKey: 'completion-report', analysis: { ...analysis, summary: '验证完成：已确认问题', evidence: 'confirmed' }, reason: '收到验证报告', evidenceRefs: ['report:offline-fixture'] };
           code = `return await tools.dmc_revise_analysis(${JSON.stringify(revisionInput)});`;
         } else throw new Error('Unexpected model request after result submission');
         yield { type: 'block-start', index: 0, blockType: 'tool-call' };
@@ -55,12 +55,14 @@ test('cold original Agent revises an analysis through real PTC with permissions 
     const originalReceipt = service.requireSubmission(sessionId);
     store.updateRun(run.id, { status: 'completed', finishedAt: new Date().toISOString() });
     await handle.dispose(); await store.close(); await store.start();
+    await service.saveSource({ ...service.source(source.id), context: '初次保存后更新的来源配置' }, source.id);
     handle = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-revision', model: 'worker' }, setup });
     assert.ok(ctx.tools.schemas(handle.agent).some(tool => tool.name === 'dmc_revise_analysis'));
     await send('报告已到达，读取当前分析并修订');
     assert.equal(calls, 3); assert.equal(service.item(item.id).analysisRevision, 2);
     assert.equal(service.item(item.id).analysis.summary, revisionInput.analysis.summary);
     assert.deepEqual(service.requireSubmission(sessionId), originalReceipt);
+    assert.equal(store.run(service.runs(item.id, {}).items.find(row => row.kind === 'analysis-revision').id).sourceSnapshot.context, '初次保存后更新的来源配置');
     const log = await ctx.sessionQuery.readSession(sessionId);
     assert.ok(log.events.some(event => event.type === 'tool/ptc-dispatch' && event.data.name === 'dmc_revise_analysis'));
     assert.equal(log.events.filter(event => event.type === 'turn/end').length, 2);

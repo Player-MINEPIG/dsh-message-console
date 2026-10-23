@@ -504,21 +504,21 @@ class ConsoleService {
     if (!analysisRoles.includes(binding.role)) throw new Error("此会话角色无权修订分析");
     const allowed = ["operationKey", "version", "contextVersion", "expectedAnalysisRevision", "analysis", "reason", "evidenceRefs"];
     if (!input || Object.keys(input).some(key => !allowed.includes(key))) throw new Error("分析修订参数无效");
-    for (const key of ["operationKey", "version", "contextVersion", "reason"]) if (typeof input[key] !== "string" || !input[key].trim()) throw new Error(`分析修订需要有效 ${key}`);
+    for (const key of ["operationKey", "reason"]) if (typeof input[key] !== "string" || !input[key].trim()) throw new Error(`分析修订需要有效 ${key}`);
     if (input.operationKey.length > 160 || JSON.stringify(input).length > 2e5) throw new Error("修订结果过大或操作键过长");
-    if (!Number.isSafeInteger(input.expectedAnalysisRevision) || input.expectedAnalysisRevision < 1) throw new Error("请先读取当前 analysisRevision");
     if (input.evidenceRefs !== undefined && (!Array.isArray(input.evidenceRefs) || input.evidenceRefs.length > 20 || input.evidenceRefs.some(ref => typeof ref !== "string" || !ref.trim() || ref.length > 1000))) throw new Error("修订证据引用无效");
     validateAnalysis(input.analysis);
     assertWritable?.();
-    const original = required(this.store.run(binding.runId), "运行记录"), source = required(this.store.source(original.sourceId), "来源");
-    if (source.workspaceId !== binding.workspaceId) throw new Error("来源工作区已变化，请从当前内容新开会话");
+    const original = required(this.store.run(binding.runId), "运行记录");
     const submission = { ...input, kind: "analysis-revision" }, replay = this.store.replaySubmission(binding.sessionId, submission,binding.runId);
     if (replay) return replay;
-    const prepared = await this.#prepare(source);
-    this.#assertWorkspaceSource(source);
-    if (input.version !== original.version || prepared.contextVersion !== original.contextVersion || input.contextVersion !== original.contextVersion) throw new Error("内容或来源资料已变化，请重新整理当前内容以启动新轮");
-    const item = required(this.store.header(original.itemId), "内容项"), at = nowISO(this.clock);
-    const run = { ...this.#runRecord(source, item, prepared, "analysis-revision"), baseAnalysisRevision: input.expectedAnalysisRevision, inputSnapshot: original.inputSnapshot, originSession: { sessionId: binding.sessionId, role: binding.role, workspaceId: binding.workspaceId, at }, revision: { originRunId: original.id, reason: input.reason, evidenceRefs: input.evidenceRefs ?? [] } };
+    let source, prepared;
+    do {
+      source = required(this.store.source(binding.sourceId), "来源");
+      prepared = await this.#prepare(source);
+    } while (source.revision !== this.store.source(binding.sourceId)?.revision);
+    const item = required(this.store.header(binding.itemId), "内容项"), at = nowISO(this.clock);
+    const run = { ...this.#runRecord(source, item, prepared, "analysis-revision"), originSession: { sessionId: binding.sessionId, role: binding.role, workspaceId: binding.workspaceId, at }, revision: { originRunId: original.id, reason: input.reason, evidenceRefs: input.evidenceRefs ?? [] } };
     assertWritable?.();
     return this.store.reviseAnalysis(binding, callId, submission, run, at);
   }

@@ -179,17 +179,16 @@ GitHub 列表默认隐藏已关闭 / 已合并内容，勾选“显示全部”�
 
 `dmc_submit_result` 是 Agent 结果的正式保存入口。自动工作角色提交分析、升级判断或监督结论；人工处理角色提交草稿。最终助手文字不作为落稿或监督结论的替代输入。一次提交使用固定 `operationKey`；精确重试返回原收据，同一个键提交不同内容会失败。
 
-已提交分析的原工作会话（writer、review、investigate）可以使用 `dmc_revise_analysis` 修订，例如收到稍后完成的验证报告。先读取 `dmc_read_item({section: "analysis"})`，把返回的 `analysisRevision` 作为 `expectedAnalysisRevision`，并沿用 `version`、`contextVersion`。提交完整的 `analysis` 和修订 `reason`，可附报告 ID 或链接 `evidenceRefs`；引用由 Agent 提供，不代表插件已核验报告。每次新修订使用新 `operationKey`，重试沿用原键和内容。
+来源绑定的分析工作会话（writer、review、investigate）可以使用 `dmc_revise_analysis` 更新绑定内容项的最新结论，例如收到稍后完成的验证报告。可先读取 `dmc_read_item({section: "analysis"})` 查看当前结论，再提交完整 `analysis` 和修订 `reason`，可附报告 ID 或链接 `evidenceRefs`；引用由 Agent 提供，不代表插件已核验报告。每次更新使用新 `operationKey`，重试沿用原键和内容。
 
-新 `round.runId` 即使复用会话也先用 `dmc_submit_result` 保存本轮结果；同轮后续报告才读取当前分析并修订。已委派但未取得报告时，先存有证据的阶段分析并结束本轮，不反复等待。修订会更新面板摘要并追加工作记录，原分析、原收据和真实会话历史保留。并发分析变化时先重新读取；内容或来源资料已变化时，当前绑定轮不能跨版本修订，需要重新整理当前内容启动新轮；兼容的原会话仍可复用。旧的待监督、待审核或被拦截草稿会标为过期，已发送和发送状态待核实的记录保留。此工具只修订分析，不生成或发布回复，也不会自动接收任务插件的完成通知。
+工具根据真实会话绑定确定目标，采用提交时最新的内容、来源配置和分析版本，不要求配置或内容与原整理轮一致，也不要求该轮已有首次分析收据。`version`、`contextVersion`、`expectedAnalysisRevision` 是可省略的旧参数，传入旧值不会阻止更新。不同操作按提交顺序更新最新结论，并各自保存前一版；相同操作的精确重试只返回原收据，不覆盖之后的结论。
+
+修订会更新面板摘要并追加工作记录，原分析、原收据和真实会话历史保留。它不重新执行整理或派发任务。旧的待监督、待审核或被拦截草稿会标为过期，已发送和发送状态待核实的记录保留。首次自动整理仍用 `dmc_submit_result` 保存本轮结果；修订工具只更新分析，不生成或发布回复，也不会自动接收任务插件的完成通知。
 
 ```js
 const current = await tools.dmc_read_item({section: "analysis"});
 await tools.dmc_revise_analysis({
   operationKey: "verification-followup-1",
-  version: current.version,
-  contextVersion: current.contextVersion,
-  expectedAnalysisRevision: current.analysisRevision,
   analysis: {summary: "验证完成，问题已确认", importance: 2, reason: "报告中的证据支持该问题",
     urgent: false, urgencyReason: null, intervention: "review", evidence: "confirmed"},
   reason: "根据已读取的验证报告更新分析",
