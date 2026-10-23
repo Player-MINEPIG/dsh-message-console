@@ -140,10 +140,16 @@ class ConsoleService {
     const processingSettings = processingSettingsOf(settings, source);
     return prepareSource({ ...source, learningGuidance }, workspace ?? await this.workspaces.resolve(source.workspaceId), { learningGuidance, processingSettings });
   }
-  markAllRead({ sourceId } = {}) {
+  #bulkScope(input = {}) {
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["sourceId", "platform"].includes(key))) throw new Error("批量操作范围无效");
+    const { sourceId, platform } = input;
     if (sourceId !== void 0 && (typeof sourceId !== "string" || !sourceId)) throw new Error("来源ID无效");
-    return this.store.markAllRead(sourceId);
+    if (platform !== void 0 && !["github", "bilibili"].includes(platform)) throw new Error("平台无效");
+    if (sourceId !== void 0 && platform !== void 0) throw new Error("来源与平台范围不能同时指定");
+    return [sourceId, platform];
   }
+  markAllRead(scope) { return this.store.markAllRead(...this.#bulkScope(scope)); }
+  markAllHandled(scope) { return this.store.markAllHandled(...this.#bulkScope(scope)); }
   feedback(itemId) { return this.store.feedback(itemId); }
   saveFeedback(itemId, input) { return this.store.saveFeedback(itemId, validateFeedback(input), nowISO(this.clock)); }
   learningList(query = {}) { return this.store.learningList(query.sourceId, query); }
