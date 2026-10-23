@@ -45,7 +45,7 @@ export function ReadingLayout({selected,children,detail,listKey}) {
       const listRect = cards.current.getBoundingClientRect();
       const left = Math.max(bounds.left + 12, listRect.left + 12), width = Math.min(350, bounds.right - left - 12, listRect.width - 24);
       const next = selected && detail && direction && bounds.bottom - bounds.top > 80 && width > 0
-        ? { direction, left:Math.round(left), top:Math.round(bounds.bottom - 58), width:Math.round(width) } : null;
+        ? { direction, left:Math.round(left), top:Math.round(bounds.bottom - 12), width:Math.round(width) } : null;
       setJump(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
@@ -72,5 +72,5 @@ export function ReadingLayout({selected,children,detail,listKey}) {
     card.scrollIntoView({block:'center',inline:'nearest',behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
     card.querySelector('.dmc-card-open')?.focus({preventScroll:true});
   };
-  return <div className="dmc-item-layout" ref={layout}><div className="dmc-cards" ref={cards}>{children}</div>{detail&&<aside className="dmc-detail-pane" ref={pane}>{detail}</aside>}{jump&&createPortal(<div role="status" className="dmc-selection-jump" style={{left:jump.left,top:jump.top,width:jump.width}}>{jump.direction==='missing'?<span>当前内容不在此页或筛选结果中</span>:<button type="button" onClick={locate}>{jump.direction==='up'?'↑ 选中内容在上方':'↓ 选中内容在下方'} · 点击定位</button>}</div>,document.body)}</div>;
+  return <div className="dmc-item-layout" ref={layout}><div className="dmc-cards" ref={cards}>{children}</div>{detail&&<aside className="dmc-detail-pane" ref={pane}>{detail}</aside>}{jump&&createPortal(<div role="status" className="dmc-selection-jump" style={{left:jump.left,top:jump.top,width:jump.width}}>{jump.direction==='missing'?<span>当前内容不在此页或筛选结果中</span>:<button type="button" aria-label={jump.direction==='up'?'选中内容在上方，点击定位':'选中内容在下方，点击定位'} onClick={locate}>{jump.direction==='up'?'↑ 上方 · 定位选中内容':'↓ 下方 · 定位选中内容'}</button>}</div>,document.body)}</div>;
 }
