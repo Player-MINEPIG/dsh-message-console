@@ -48,7 +48,7 @@ test('collapsed card keeps original link outside the detail button and suppresse
 test('bulk read describes source-wide pagination scope and preservation',()=>{
   const source=render(ReadAllControl,{sourceId:'s',action(){}}),all=render(ReadAllControl,{action(){}});
   assert.match(source,/覆盖当前来源所有分页/);assert.match(all,/覆盖全部来源/);
-  for(const html of [source,all]){assert.match(html,/清除当前未读与关注提示/);assert.match(html,/保留草稿、评价和历史/);}
+  for(const html of [source,all]){assert.match(html,/已读仅清未读/);assert.match(html,/保留草稿、评价和历史/);}
 });
 
 test('feedback diff renders escaped before and after with case references and global scope',()=>{

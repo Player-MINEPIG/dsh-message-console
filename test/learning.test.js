@@ -138,7 +138,7 @@ test('learning configuration discovery identifies exact targets without exposing
   assert.equal(read({ target: 'global', field: 'learningGuidance' }).text, '冻结通用指导');
 });
 
-test('bulk read acknowledges attention while preserving analysis and draft history; new analysis or draft reopens attention', async t => {
+test('bulk reading preserves handling; bulk completion acknowledges only this round and new events reopen attention', async t => {
   const f = await fixture(t), item = f.items()[0], source = f.service.source(f.source.id);
   const run = { id: 'run', itemId: item.id, sourceId: source.id, workspaceId: 'ws', version: item.version, contextVersion: source.contextVersion, sourceContextVersion: source.contextVersion, baseAnalysisRevision: 0, status: 'completed' };
   f.store.createRun(run); f.store.adoptResult(run.id, analysis);
@@ -147,11 +147,13 @@ test('bulk read acknowledges attention while preserving analysis and draft histo
   const draft = await f.service.submitFromSession({ sessionId: 'human' }, { kind: 'draft', operationKey: 'draft1', body: '保留草稿' });
   const storedAnalysis = f.store.item(item.id).analysis;
   assert.deepEqual(f.service.markAllRead({ sourceId: source.id }), { count: 1 });
-  const cleared = f.items()[0]; assert.equal(cleared.attentionAcknowledged, true); assert.equal(cleared.priority, 0); assert.equal(cleared.needsHandling, false);
+  assert.equal(f.items()[0].needsHandling, true); assert.equal(f.items()[0].priority, 33);
+  assert.deepEqual(f.service.markAllHandled({ sourceId: source.id }), { count: 1 });
+  const cleared = f.items()[0]; assert.equal(cleared.handling, 'done'); assert.equal(cleared.attentionAcknowledged, true); assert.equal(cleared.priority, 0); assert.equal(cleared.needsHandling, false);
   assert.deepEqual(f.store.item(item.id).analysis, storedAnalysis); assert.equal(f.service.draft(draft.draftId).body, '保留草稿');
   await f.service.submitFromSession({ sessionId: 'human' }, { kind: 'draft', operationKey: 'draft2', body: '新草稿' });
   assert.equal(f.items()[0].attentionAcknowledged, false); assert.equal(f.items()[0].needsHandling, true);
-  f.service.markAllRead();
+  f.service.markAllHandled();
   f.store.applyFetch(source.id, [{ remoteId: '0', kind: 'comment', title: '问题0', body: '新的原文', payload: {} }], {}, new Date().toISOString(), fingerprint);
   assert.equal(f.items()[0].attentionAcknowledged, false); assert.equal(f.items()[0].status, 'handling');
 });

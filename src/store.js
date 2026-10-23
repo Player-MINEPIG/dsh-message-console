@@ -390,15 +390,33 @@ class Store {
       this.#project(id);
     });
   }
-  markAllRead(sourceId) {
+  #bulkRows(sourceId, platform, handlingOnly = false) {
+    if (sourceId) required(this.source(sourceId), "来源");
+    const where = [], args = [];
+    if (sourceId) { where.push("source_id=?"); args.push(sourceId); }
+    if (platform) { where.push("source_id IN (SELECT id FROM sources WHERE json_extract(data,'$.platform')=?)"); args.push(platform); }
+    if (handlingOnly) where.push("needs_handling=1");
+    return this.#all(`SELECT id FROM items ${where.length ? "WHERE " + where.join(" AND ") : ""}`, ...args);
+  }
+  markAllRead(sourceId, platform) {
     return this.#transaction(() => {
-      if (sourceId) required(this.source(sourceId), "来源");
-      const rows = this.#all(`SELECT id FROM items ${sourceId ? "WHERE source_id=?" : ""}`, ...sourceId ? [sourceId] : []);
+      const rows = this.#bulkRows(sourceId, platform);
       for (const row of rows) {
-        this.#run("UPDATE items SET read_version=version,acknowledged_attention_version=attention_version WHERE id=?", row.id);
+        this.#run("UPDATE items SET read_version=version WHERE id=?", row.id);
         this.#project(row.id);
       }
-      this.#audit("items.read-all", { sourceId: sourceId ?? null, count: rows.length });
+      this.#audit("items.read-all", { sourceId: sourceId ?? null, platform: platform ?? null, count: rows.length });
+      return { count: rows.length };
+    });
+  }
+  markAllHandled(sourceId, platform) {
+    return this.#transaction(() => {
+      const rows = this.#bulkRows(sourceId, platform, true);
+      for (const row of rows) {
+        this.#run("UPDATE items SET handling='done',acknowledged_attention_version=attention_version WHERE id=?", row.id);
+        this.#project(row.id);
+      }
+      this.#audit("items.handle-all", { sourceId: sourceId ?? null, platform: platform ?? null, count: rows.length });
       return { count: rows.length };
     });
   }

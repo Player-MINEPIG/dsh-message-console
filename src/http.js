@@ -58,6 +58,7 @@ function createHandler(service, admission) {
       let result = { ok: true };
       if (key === "image-cache/clear") result = await service.clearImageCache();
       else if (key === "read-all") result = service.markAllRead(body);
+      else if (key === "handle-all") result = service.markAllHandled(body);
       else if (key === "learning") result = await service.startLearning(body);
       else if (path[0] === "learning" && path.length === 3 && path[2] === "apply") result = await service.applyLearning(path[1], body);
       else if (path[0] === "learning" && path.length === 3 && path[2] === "reject") result = service.rejectLearning(path[1], body);
