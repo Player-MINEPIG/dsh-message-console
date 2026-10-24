@@ -46,12 +46,12 @@ test('incomplete baseline never commits or marks source initialized',async t=>{
   const result=await f.service.refresh(f.source.id);assert.equal(result.fetched,false);assert.equal(f.items().length,0);assert.equal(f.service.source(f.source.id).initialized,false);
 });
 
-test('human entry reuses the current-version session and preserves older-version links',async t=>{
+test('conversation entry prefers the working session over a prior human fallback',async t=>{
   const f=await setup(t);let count=0;f.executor.conversation=async({runId})=>f.bindHuman(runId,`human-${++count}`);
   await f.service.refresh(f.source.id);const id=f.items()[0].id;
   const first=await f.service.openConversation(id);assert.deepEqual(await f.service.openConversation(id),first);assert.equal(count,1);
   f.setRows([entry('changed')]);await f.service.refresh(f.source.id);
-  const second=await f.service.openConversation(id);assert.notEqual(second.sessionId,first.sessionId);assert.equal(f.store.item(f.items()[0].id).sessions.filter(link=>link.role==='human').length,2);
+  const second=await f.service.openConversation(id);assert.notEqual(second.sessionId,first.sessionId);assert.equal(second.sessionId,'writer-1');assert.equal(f.store.item(f.items()[0].id).sessions.filter(link=>link.role==='human').length,1);
 });
 
 test('unconfirmed publication also blocks a new draft on a later content version',async t=>{
@@ -126,14 +126,14 @@ test('sources require an existing workspace, legacy sources cannot start analysi
   await assert.rejects(f.service.openConversation(id),/工作区/);
 });
 
-test('changing input order invalidates drafts and human reuse while preserving existing history links',async t=>{
+test('changing input order invalidates drafts but keeps the original working conversation',async t=>{
  const f=await setup(t);let count=0;f.executor.conversation=async({runId})=>f.bindHuman(runId,`human-${++count}`);
  await f.service.refresh(f.source.id);f.setRows([entry('new')]);await f.service.refresh(f.source.id);
  const item=f.items()[0],first=await f.service.openConversation(item.id);
  await f.service.saveSource({...f.source,inputOrder:['content','context','source','materials'],description:'brief',tags:['personal']},f.source.id);
  assert.equal(f.drafts()[0].status,'stale');
- const second=await f.service.openConversation(item.id);assert.notEqual(second.sessionId,first.sessionId);
- assert.equal(f.store.item(f.items()[0].id).sessions.filter(link=>link.role==='human').length,2);
+ const second=await f.service.openConversation(item.id);assert.deepEqual(second,first);
+ assert.equal(first.sessionId,'writer-1');assert.equal(count,0);
  assert.equal(f.service.source(f.source.id).description,'brief');assert.deepEqual(f.service.source(f.source.id).tags,['personal']);
 });
 test('preview resolves only explicit workspace files and the selected source real item, without mutation',async t=>{
@@ -207,7 +207,7 @@ test('stage preview matches assembled runtime blocks and stage changes invalidat
  await writeFile(join(f.directory,'stage.md'),'STAGE_FILE');await f.service.refresh(f.source.id);f.setRows([entry('new')]);await f.service.refresh(f.source.id);
  let humanCount=0;f.executor.conversation=async({runId})=>f.bindHuman(runId,`human-${++humanCount}`);const item=f.items()[0],first=await f.service.openConversation(item.id);
  const updated=await f.service.saveSource({...f.source,context:'LEGACY_SHARED',stageContexts:{generation:{context:'GEN_ONLY',materials:[{kind:'file',name:'notes',path:'stage.md'}]},decision:{context:'DECISION_ONLY'}}},f.source.id);
- assert.equal(f.drafts()[0].status,'stale');assert.notEqual((await f.service.openConversation(item.id)).sessionId,first.sessionId);
+ assert.equal(f.drafts()[0].status,'stale');assert.equal((await f.service.openConversation(item.id)).sessionId,first.sessionId);assert.equal(humanCount,0);
  const prepared=await prepareSource(updated,{path:f.directory});for(const stage of ['decision','escalation','generation','supervision']){const preview=await f.service.previewInput({source:updated,sourceId:updated.id,itemId:item.id,stage});assert.deepEqual(preview.input.blocks,assembleInput(prepared,f.store.item(f.items()[0].id),{stage}).blocks);assert.equal(preview.input.stage,stage);if(stage==='escalation')assert.match(preview.serialized,/占位/);if(stage==='supervision')assert.match(preview.input.draft,/占位/);}
  await assert.rejects(f.service.previewInput({source:updated,stage:'system'}),/阶段无效/);assert.equal(f.service.source(f.source.id).context,'LEGACY_SHARED');
 });
@@ -226,4 +226,35 @@ test('session directory returns incremental eligibility without background or in
  const before=f.service.sessionDirectory();assert.deepEqual(before.changes,[{sessionId:'active',eligible:false}]);
  f.store.updateRun(run.id,{status:'failed'});const next=f.service.sessionDirectory({after:before.next});assert.deepEqual(next.changes,[{sessionId:'active',eligible:true}]);
  assert.deepEqual(f.service.sessionDirectory({after:next.next}).changes,[]);
+});
+
+
+test('opening working history does not create a run or rewrite its binding after content changes',async t=>{
+ const f=await setup(t);await f.service.refresh(f.source.id);await f.service.organize(f.source.id,{scope:'history'});
+ const item=f.items()[0],binding=f.store.sessionBinding('writer-1'),runs=f.runs().map(r=>f.store.run(r.id));
+ const first=await f.service.openConversation(item.id);assert.equal(first.sessionId,'writer-1');
+ f.store.applyFetch(f.source.id,[entry('new unorganized version')],{},new Date().toISOString(),fingerprint);
+ await f.service.saveSource({...f.source,context:'new guidance'},f.source.id);
+ assert.deepEqual(await f.service.openConversation(item.id),first);
+ assert.deepEqual(f.store.sessionBinding('writer-1'),binding);assert.deepEqual(f.runs().map(r=>f.store.run(r.id)),runs);
+});
+
+test('conversation candidates exclude other workspaces and roles and prefer the latest working round',async t=>{
+ const f=await setup(t);await f.service.refresh(f.source.id);await f.service.organize(f.source.id,{scope:'history'});
+ const item=f.items()[0];f.bindHuman(f.runs()[0].id,'later-human');
+ assert.deepEqual(f.store.conversationSessions(item.id,'ws-1').map(s=>s.sessionId),['writer-1']);
+ assert.deepEqual(f.store.conversationSessions(item.id,'ws-2'),[]);
+ f.setRows([entry('second round')]);await f.service.refresh(f.source.id);
+ assert.equal((await f.service.openConversation(item.id)).sessionId,'writer-2');
+ await f.service.saveSource({...f.source,workspaceId:'ws-2'},f.source.id);
+ assert.match((await f.service.openConversation(item.id)).sessionId,/^human/);
+});
+
+test('missing native working sessions fall back to human creation, host errors do not',async t=>{
+ const f=await setup(t);await f.service.refresh(f.source.id);await f.service.organize(f.source.id,{scope:'history'});
+ const id=f.items()[0].id;
+ f.executor.resolveConversation=async()=>{throw new Error('history read failed');};
+ const before=f.runs();await assert.rejects(f.service.openConversation(id),/history read failed/);assert.deepEqual(f.runs(),before);
+ f.executor.resolveConversation=async()=>null;
+ assert.match((await f.service.openConversation(id)).sessionId,/^human/);
 });
