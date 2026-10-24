@@ -36,8 +36,10 @@ test('real PTC reuses earliest analysis session warm and cold with current recei
    const prepared=await prepareSource(service.source(source.id),{path:workspace}),item=store.item(itemId),r=store.createRun({id:`reuse-run-${++n}`,itemId,sourceId:source.id,workspaceId:source.workspaceId,version:item.version,contextVersion:prepared.contextVersion,sourceContextVersion:service.source(source.id).contextVersion,sourceSnapshot:prepared,baseAnalysisRevision:item.analysisRevision,status:'running',startedAt:new Date().toISOString()});
    const receipt=await owner.executor.runAgent({runId:r.id,role:'investigate',workspaceId:source.workspaceId,provider,model,input:{body:item.body,context:prepared.context},instructions:'用工具保存合成分析',title:'合成复用'});store.updateRun(r.id,{status:'completed',finishedAt:new Date().toISOString()});return {run:r,receipt};
   }
-  await installAgentTools(ctx,service);owner=await f.executorOwner(service);
+  await installAgentTools(ctx,service);owner=await f.executorOwner(service);service.executor=owner.executor;
   const one=await run(),id=one.receipt.sessionId,agent=ctx.agents.get(sessions.SessionId(id));const original=store.run(one.run.id);
+  const beforeOpen=agent.session.snapshotEvents(),beforeCalls=calls;
+  assert.deepEqual(await service.openConversation(itemId),{sessionId:id});assert.equal(calls,beforeCalls);assert.deepEqual(agent.session.snapshotEvents(),beforeOpen);
   agent.followup(llm.createUserMessage({source:{kind:'user',form:'instructions'},content:[{type:'text',text:'HUMAN_HISTORY'}]}));await agent.whenIdle();
   store.applyFetch(source.id,[{...raw,body:'ROUND_TWO_CONTENT'}],{},new Date().toISOString(),fingerprint);
   const two=await run('next','offline-next');assert.equal(two.receipt.sessionId,id);assert.notEqual(two.receipt.id,one.receipt.id);assert.equal(two.receipt.adopted,true);assert.equal(requests.at(-1).model,'next');
@@ -51,7 +53,11 @@ test('real PTC reuses earliest analysis session warm and cold with current recei
   await ctx.sessions.flush(newer.agent.session);await newer.dispose();
   await service.saveSource({...service.source(source.id),context:'ROUND_THREE_SOURCE_CONTEXT'},source.id);
   await owner.dispose();owner=null;assert.equal(ctx.agents.get(sessions.SessionId(id)),undefined);
-  owner=await f.executorOwner(service);store.applyFetch(source.id,[{...raw,body:'ROUND_THREE_CONTENT'}],{},new Date().toISOString(),fingerprint);
+  owner=await f.executorOwner(service);service.executor=owner.executor;
+  const coldEvents=(await ctx.sessionQuery.readSession(id)).events,coldCalls=calls;
+  assert.deepEqual(await service.openConversation(itemId),{sessionId:'newer-compatible-analysis'});
+  assert.equal(ctx.agents.get(sessions.SessionId(id)),undefined);assert.equal(calls,coldCalls);assert.deepEqual((await ctx.sessionQuery.readSession(id)).events,coldEvents);
+  store.applyFetch(source.id,[{...raw,body:'ROUND_THREE_CONTENT'}],{},new Date().toISOString(),fingerprint);
   const three=await run('cold','offline-next');assert.equal(three.receipt.sessionId,id);assert.equal(requests.at(-1).model,'cold');assert.match(JSON.stringify(requests.at(-1).messages),/HUMAN_HISTORY/);assert.match(JSON.stringify(requests.at(-1).messages),/ROUND_THREE_CONTENT/);assert.match(JSON.stringify(requests.at(-1).messages),/ROUND_THREE_SOURCE_CONTEXT/);assert.notEqual(three.run.contextVersion,two.run.contextVersion);assert.equal(store.sessionBinding('newer-compatible-analysis').runId,two.run.id);
   assert.equal(store.receipt(id,one.run.id).id,one.receipt.id);assert.equal(store.receipt(id,two.run.id).id,two.receipt.id);
   const events=(await ctx.sessionQuery.readSession(id)).events;assert.equal(events.filter(e=>e.type==='tool/ptc-dispatch'&&e.data.name==='dmc_submit_result').length,3);

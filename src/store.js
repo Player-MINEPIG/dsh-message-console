@@ -657,6 +657,10 @@ class Store {
   sessionBinding(id) {
     return parse(this.#get("SELECT data FROM sessions WHERE session_id=?", id)?.data);
   }
+  conversationSessions(itemId, workspaceId) {
+    const item = required(this.header(itemId), "内容项");
+    return this.#all("SELECT s.data FROM sessions s JOIN run_sessions r ON r.session_id=s.session_id WHERE s.item_id=? AND s.source_id=? AND s.workspace_id=? AND s.role IN ('writer','review','investigate') AND s.cwd IS NOT NULL AND coalesce(json_extract(s.data,'$.legacy'),0)=0 GROUP BY s.session_id ORDER BY max(r.rowid) DESC,s.session_id", itemId, item.sourceId, workspaceId).map(row => parse(row.data));
+  }
   humanSession(itemId, workspaceId, version, contextVersion) {
     return this.#all("SELECT data FROM sessions WHERE item_id=? AND role='human' AND cwd IS NOT NULL ORDER BY seq DESC", itemId).map((r) => parse(r.data)).find((s) => s.workspaceId === workspaceId && s.version === version && s.contextVersion === contextVersion && !s.legacy);
   }

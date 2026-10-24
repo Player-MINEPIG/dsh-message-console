@@ -85,3 +85,19 @@ test('signal already aborted during enqueue is observed when the listener is ins
  const controller=new AbortController(),f=fixture({afterFollowup:()=>controller.abort(new Error('synthetic owner stop'))});
  await assert.rejects(f.executor.runAgent({runId:'cancelled',workspaceId:'ws-1',role:'writer',input:{},instructions:'save',provider:'p',model:'m',title:'cancel',signal:controller.signal}),/synthetic owner stop/);assert.equal(f.cancellations[0].reason,'message-console signal cancelled');
 });
+
+
+test('conversation resolution checks live and cold identities without resuming or creating agents',async()=>{
+ const {realpath}=await import('node:fs/promises'),cwd=await realpath('/tmp');
+ const live=new Map(),cold=new Map();let reads=0;
+ const ctx={agents:{get:id=>live.get(id)},sessionPersistence:{stat:async id=>{reads++;if(id==='broken')throw new Error('disk read failed');return cold.get(id);}}};
+ const executor=createDshExecutor(ctx,{SessionId,workspaces:{resolve:async()=>({path:cwd})}});
+ const binding=id=>({sessionId:id,cwd,workspaceId:'ws'}),resolveBindings=bindings=>executor.resolveConversation({bindings,workspaceId:'ws'});
+ live.set('warm',{session:{header:{cwd}}});cold.set('cold',{header:{cwd}});
+ assert.equal(await resolveBindings([binding('warm')]),'warm');assert.equal(reads,0);
+ assert.equal(await resolveBindings([binding('deleted'),binding('cold')]),'cold');
+ assert.equal(await resolveBindings([binding('deleted')]),null);
+ assert.equal(await resolveBindings([{...binding('warm'),cwd:'/does-not-exist'}]),null);
+ cold.set('wrong',{header:{cwd:'/'}});await assert.rejects(resolveBindings([binding('wrong')]),/绑定不匹配/);
+ await assert.rejects(resolveBindings([binding('broken'),binding('cold')]),/disk read failed/);
+});
