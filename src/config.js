@@ -18,19 +18,20 @@ export const PARAMETERS = {
   supervisorProvider: { scope: 'analysis', default: '', type: 'string' },
   supervisorModel: { scope: 'analysis', default: '', type: 'string' },
   replyStyle: { scope: 'reply', default: '简明、自然；不擅自代表用户作出承诺。', type: 'string' },
-  includeClosed: { scope: 'github', default: false, type: 'boolean' },
   reviewFocus: { scope: 'github', default: '有依据的正确性问题，标明位置与影响。', type: 'string' },
 };
 
 export function validateSettings(input) {
   if (!input || Array.isArray(input) || typeof input !== 'object') throw new Error('设置必须为对象');
-  for (const [key, value] of Object.entries(input)) {
+  const { includeClosed, ...settings } = input;
+  if (includeClosed !== undefined && typeof includeClosed !== 'boolean') throw new Error('设置值无效：includeClosed');
+  for (const [key, value] of Object.entries(settings)) {
     const spec = PARAMETERS[key];
     if (!spec) throw new Error(`未知设置：${key}`);
     if (typeof value !== spec.type || (spec.type === 'number' && (!Number.isFinite(value) || value < spec.min || value > spec.max))) throw new Error(`设置值无效：${key}`);
     if (spec.type === 'string' && value.length > 10000) throw new Error(`设置过长：${key}`);
   }
-  return structuredClone(input);
+  return structuredClone(settings);
 }
 export { applies };
 export function resolveSettings(global, source) {

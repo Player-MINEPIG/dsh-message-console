@@ -19,31 +19,29 @@ async function fixture(t) {
   t.after(async()=>{await service.close();await rm(directory,{recursive:true,force:true});});
   return {directory,store,service,source,calls,setRows(value){rows=value;},items:()=>service.items(source.id,{pageSize:50,showClosed:true}).items};
 }
-test('closed and merged GitHub items are collected but skipped by manual and automatic organization without runs',async t=>{
-  const f=await fixture(t);f.setRows([row('issue',1,'CLOSED'),row('pr',2,'MERGED'),row('pr',3,'closed'),row('issue',4),row('release',5)]);
-  await f.service.refresh(f.source.id);assert.equal(f.items().length,5);assert.equal(f.calls.length,0);
-  const id=`${f.source.id}:issue:1`;await f.service.setHandling(id,'later');const before=f.store.item(id);
+test('closed and merged items remain visible and enter manual and scheduled organization',async t=>{
+  const f=await fixture(t);const rows=[row('issue',1,'closed'),row('pr',2,'merged'),row('pr',3,'closed'),row('issue',4),row('release',5)];
+  f.setRows(rows);await f.service.refresh(f.source.id);
+  assert.equal(f.service.items(f.source.id).total,5);assert.equal(f.calls.length,0,'initial baseline stays read and unorganized');
   const manual=await f.service.organize(f.source.id,{scope:'history'});
-  assert.equal(manual.completed,2);assert.equal(manual.excludedClosed,3);assert.equal(manual.candidates,2);
-  for (const item of f.items().filter(item=>['CLOSED','MERGED','closed'].includes(item.payload.state)))assert.equal(f.service.runs(item.id,{}).total,0);
-  assert.equal(f.store.item(id).handling,'later');assert.equal(f.store.item(id).attentionVersion,before.attentionVersion);
-  f.setRows([row('issue',1,'closed'),row('pr',2,'merged'),row('pr',3,'closed')]);
-  const refreshed=await f.service.refresh(f.source.id);assert.equal(refreshed.organization.completed,0);assert.equal(refreshed.organization.excludedClosed,2);assert.match(refreshed.organization.reason,/已关闭或已合并/);assert.equal(f.calls.length,2);
-  assert.equal(f.store.item(id).handling,'later');assert.equal(f.service.runs(id,{}).total,0);
+  assert.equal(manual.completed,5);assert.equal(manual.excludedClosed,0);
+  assert.equal((await f.service.organize(f.source.id,{scope:'history'})).completed,0,'unchanged items are not rerun');
+  f.setRows(rows.map(item=>({...item,body:'new comment while closed'})));
+  const refreshed=await f.service.refresh(f.source.id,{trigger:'scheduled'});
+  assert.equal(refreshed.organization.completed,5);assert.equal(refreshed.organization.excludedClosed,0);
+  assert.equal(f.service.items(f.source.id,{filter:'unread'}).total,5,'analysis does not mark read');
+  for(const item of f.items())assert.equal(f.service.runs(item.id,{}).total,2);
 });
-test('reopened GitHub issue becomes eligible; global includeClosed can be overridden and restored',async t=>{
-  const f=await fixture(t);f.setRows([row('issue',1,'closed'),row('pr',2,'merged')]);await f.service.refresh(f.source.id);
-  assert.equal((await f.service.organize(f.source.id,{scope:'history'})).completed,0);
-  f.setRows([row('issue',1,'open'),row('pr',2,'merged')]);assert.equal((await f.service.refresh(f.source.id)).organization.completed,1);
-  await f.service.configure({includeClosed:true});
-  let source=await f.service.saveSource({...f.service.source(f.source.id),settings:{includeClosed:false}},f.source.id);
-  assert.equal(resolveSettings(f.store.settings(),source).includeClosed.value,false);
-  assert.equal((await f.service.organize(f.source.id,{scope:'history'})).completed,0);
-  source=await f.service.saveSource({...source,settings:{}},f.source.id);
-  assert.equal(resolveSettings(f.store.settings(),source).includeClosed.value,true);
-  assert.equal((await f.service.organize(f.source.id,{scope:'history'})).completed,1);
-  assert.deepEqual(f.calls,[`${f.source.id}:issue:1`,`${f.source.id}:pr:2`]);
+test('legacy closed exclusions cannot disable organization and can be saved without reintroducing the setting',async t=>{
+  const f=await fixture(t);
+  await f.service.configure({includeClosed:false});
+  const source=await f.service.saveSource({...f.service.source(f.source.id),settings:{includeClosed:false}},f.source.id);
+  assert.equal(Object.hasOwn(resolveSettings(f.store.settings(),source),'includeClosed'),false);
+  assert.deepEqual(validateSettings({includeClosed:false}),{});
   assert.throws(()=>validateSettings({includeClosed:'false'}),/无效/);
+  f.setRows([row('issue',1,'closed'),row('pr',2,'merged')]);await f.service.refresh(f.source.id);
+  assert.equal((await f.service.organize(f.source.id,{scope:'history'})).completed,2);
+  f.setRows([row('issue',1,'open'),row('pr',2,'merged')]);assert.equal((await f.service.refresh(f.source.id)).organization.completed,1);
 });
 test('web Release and fallback PR retain item IDs, versions, feedback, drafts and sessions when switching to API',async t=>{
   const f=await fixture(t);
@@ -70,4 +68,12 @@ test('cards and historical headers expose state even for API versions with old m
   const f=await fixture(t);f.setRows([row('pr',1,'merged')]);await f.service.refresh(f.source.id,{organize:false});
   const db=new DatabaseSync(join(f.directory,'console.sqlite'));db.exec("UPDATE item_versions SET metadata='{}'");db.close();
   assert.equal(f.items()[0].payload.state,'merged');assert.equal(f.store.header(f.items()[0].id).payload.state,'merged');
+});
+
+test('a closed GitHub result requiring no intervention clears old handling while retaining unread',async t=>{
+  const f=await fixture(t);f.setRows([row('issue',1)]);await f.service.refresh(f.source.id);
+  const id=`${f.source.id}:issue:1`;f.store.handling(id,'pending');
+  f.setRows([row('issue',1,'closed')]);await f.service.refresh(f.source.id);
+  assert.equal(f.store.item(id).handling,'none');assert.equal(f.service.items(f.source.id,{filter:'handling'}).total,0);
+  assert.equal(f.service.items(f.source.id,{filter:'unread'}).total,1);
 });

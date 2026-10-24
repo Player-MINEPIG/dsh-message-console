@@ -57,6 +57,9 @@ export class GitHubConnector {
     const row = issue ?? (await this.call(`${prefix}/issues/${number}`, { signal })).data;
     const comments = await this.pages(`${prefix}/issues/${number}/comments?per_page=100`, { signal });
     const payload = { number, state: String(row.state).toLowerCase(), author: row.user?.login, labels: (row.labels ?? []).map(label => typeof label === 'string' ? label : label.name).sort(), comments: comments.map(comment => ({ id: String(comment.id), author: comment.user?.login, body: comment.body, updatedAt: comment.updated_at })) };
+    const events = await this.pages(`${prefix}/issues/${number}/events?per_page=100`, { signal });
+    const stateEvents = events.filter(event => ['closed', 'reopened', 'merged'].includes(event.event)).map(event => ({ id: String(event.id), event: event.event, actor: event.actor?.login ?? null, createdAt: event.created_at }));
+    if (stateEvents.length) payload.stateEvents = stateEvents;
     let updatedAt = row.updated_at ?? row.created_at;
     if (kind === 'pr') {
       const pr = (await this.call(`${prefix}/pulls/${number}`, { signal })).data;

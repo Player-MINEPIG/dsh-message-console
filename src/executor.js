@@ -89,10 +89,11 @@ export class WorkflowExecutor {
         importance: decision.importance, urgent: false, reason: decision.reason ?? `决策：${CHOICES[decision.choice]}`, intervention: decision.choice === 'human' ? 'human' : 'none', evidence: 'inferred', decision,
       };
     }
+    const githubChanges = '先判断本次变动是否值得用户查看，再决定是否需要进一步审查或核实。结合当前平台状态、payload.stateEvents中的操作者与时间、来源ownLogin及此前版本/分析；必要时用工具查询旧版本，不能把历史事件当成新事件。若只有用户本人关闭或合并且没有其他值得关注的变化，通常importance=0、intervention=none，不拟稿；若其他人关闭或合并，应说明谁做了什么并提示用户查看（intervention=human），结合影响评定重要程度。未知操作者或登录身份必须说明不确定，不能把内容作者/仓库所有者当作关闭者，也不能因用户曾关闭而忽略后续他人回复。已关闭/合并本身不代表仍需修复或回复。';
     const instructions = item.kind === 'pr'
-      ? `审查提供的PR变更和上下文，只报告有依据的问题及修复建议。上下文不完整时明确限制，不能声称执行测试或查看未提供的文件。重点：${settings.reviewFocus}。${SCHEMA}`
+      ? `${githubChanges}审查提供的PR变更和上下文，只报告有依据的问题及修复建议。上下文不完整时明确限制，不能声称执行测试或查看未提供的文件。重点：${settings.reviewFocus}。${SCHEMA}`
       : item.kind === 'issue'
-        ? `核对issue描述、代码证据和讨论。区分已证实、推测、信息不足，不声称实际复现，提供下一步建议。${SCHEMA}`
+        ? `${githubChanges}核对issue描述、代码证据和讨论。区分已证实、推测、信息不足，不声称实际复现，提供下一步建议。${SCHEMA}`
         : item.kind === 'release'
           ? `汇总此release的变化与关注原因，不拟发布正文，draftBody必须null。${SCHEMA}`
           : `依据明确事实拟回复，不替用户决定立场。风格：${settings.replyStyle}。${AUTO_REPLY_REVIEW_RULE} 本轮若拟稿，必须用 replyToCommentId 指定本楼根评论或楼中楼的准确ID，只回复尚未回答的外部评论，不能答自己。重要程度独立于回复方式。${source.autoReply ? `正文必须从“${AUTO_REPLY_PREFIX}”开始，正文含标识总长不超过1000字符。` : ''}${SCHEMA}`;

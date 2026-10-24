@@ -38,8 +38,8 @@ async function fixture(t,count=127){
   return {directory,store,service,sources,all,snapshots,card,adopt,draft,request};
 }
 
-test('全部已读跨 127 条分页、含隐藏关闭项，保留处理/关注/分析/草稿及其他来源',async t=>{
-  const f=await fixture(t),rows=f.all(f.sources[0]);assert.equal(rows.length,127);assert.ok(f.service.items(f.sources[0].id,{pageSize:10}).total<127);
+test('全部已读跨 127 条分页、含关闭项，保留处理/关注/分析/草稿及其他来源',async t=>{
+  const f=await fixture(t),rows=f.all(f.sources[0]);assert.equal(rows.length,127);assert.equal(f.service.items(f.sources[0].id,{pageSize:10}).total,127);
   f.store.handling(rows[0].id,'pending');f.store.handling(rows[1].id,'later');f.adopt(rows[2].id);
   const saved=await f.draft(rows.find(x=>x.kind==='issue').id);const draftBefore=f.service.draft(saved.receipt.draftId),before=f.snapshots(),handlingBefore=f.service.overview().sources.find(x=>x.id===f.sources[0].id).handling;
   const result=f.service.markAllRead({sourceId:f.sources[0].id});assert.equal(result.count,127);
@@ -120,4 +120,42 @@ test('草稿各历史状态保持不动，完成已读待处理项不改变其�
     assert.equal(f.service.markAllRead({sourceId:f.sources[1].id}).count,3);assert.equal(f.card(id).needsHandling,active);assert.equal(f.store.item(id).readVersion,f.store.item(id).version);
     assert.equal(f.service.markAllHandled({sourceId:f.sources[1].id}).count,active?1:0);assert.equal(f.card(id).needsHandling,false);assert.equal(f.card(id).status,'read');assert.deepEqual(f.service.draft(saved.receipt.draftId),before);
   });
+});
+
+const ignore={...human,summary:'无需回复',intervention:'none',importance:0,decision:{choice:'ignore'}};
+test('B站无需回复清除旧待处理和待审草稿，保留未读与历史，新人工结论再次提醒',async t=>{
+  const f=await fixture(t,1),source=f.sources[1],id=f.all(source)[0].id;
+  const {receipt}=await f.draft(id),before=f.store.item(id),oldBody=f.store.draft(receipt.draftId).body;
+  f.store.handling(id,'later');f.adopt(id,ignore);
+  assert.equal(f.card(id).needsHandling,false);assert.equal(f.card(id).status,'unread');assert.equal(f.store.item(id).handling,'none');
+  assert.equal(f.store.item(id).readVersion,before.readVersion);assert.equal(f.store.draft(receipt.draftId).status,'superseded');assert.equal(f.store.draft(receipt.draftId).body,oldBody);
+  assert.equal(f.service.items(source.id,{filter:'handling'}).total,0);
+  f.adopt(id,human);assert.equal(f.card(id).needsHandling,true);
+});
+test('无需回复保留发送中和结果不明草稿的核实提醒，GitHub处理状态不受影响',async t=>{
+  const f=await fixture(t,1);
+  for(const status of ['sending','unknown']){
+    const id=f.all(f.sources[1])[0].id,{receipt}=await f.draft(id);f.store.updateDraft(receipt.draftId,{status});f.adopt(id,ignore);
+    assert.equal(f.card(id).needsHandling,true);assert.equal(f.store.draft(receipt.draftId).status,status);
+  }
+  const id=f.all(f.sources[0])[0].id;f.adopt(id,human);f.adopt(id,ignore);assert.equal(f.card(id).needsHandling,true);
+});
+test('过期无需回复不能清理新版本状态；升级只修复当前有效的旧结论一次',async t=>{
+  const f=await fixture(t,1),source=f.sources[1],id=f.all(source)[0].id;
+  const oldRun=f.adopt(id,human),before=f.store.item(id);
+  f.store.applyFetch(source.id,[{remoteId:before.remoteId,kind:'comment',title:before.title,body:'new reply',payload:{comments:[]}}],{},at,fingerprint);
+  assert.equal(f.store.adoptResult(oldRun.id,ignore),false);assert.equal(f.card(id).needsHandling,true);
+  f.adopt(id,ignore);f.store.handling(id,'later');
+  const unchanged=f.store.item(id);await f.store.close();
+  const db=new DatabaseSync(join(f.directory,'console.sqlite'));db.exec("DELETE FROM meta WHERE key='comment-ignore-settled-v1'");db.close();
+  await f.store.start();assert.equal(f.card(id).needsHandling,false);assert.equal(f.store.item(id).readVersion,unchanged.readVersion);assert.deepEqual(f.store.item(id).analysis,unchanged.analysis);
+  f.store.handling(id,'pending');await f.store.close();await f.store.start();assert.equal(f.card(id).needsHandling,true,'explicit manual handling after migration is retained');
+});
+
+test('B站原分析会话修订为无需回复后，旧草稿不再使条目需要处理',async t=>{
+  const f=await fixture(t,1),id=f.all(f.sources[1])[0].id,{run,receipt}=await f.draft(id);
+  const sessionId='synthetic-revision-no-reply';f.service.bindSession({sessionId,runId:run.id,role:'writer',workspaceId:'ws',cwd:f.directory});
+  await f.service.reviseAnalysisFromSession({sessionId},{operationKey:'ignore-revision',analysis:{...ignore,decision:undefined},reason:'现在无需回复'});
+  assert.equal(f.card(id).needsHandling,false);assert.equal(f.store.draft(receipt.draftId).status,'superseded');
+  assert.equal(f.card(id).status,'unread');assert.equal(f.store.run(run.id).result.intervention,'human');
 });

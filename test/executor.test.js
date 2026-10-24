@@ -49,3 +49,15 @@ test('Jev ignore and human decisions do not require a generation route; upgrade 
  const executor=new WorkflowExecutor({decision:async()=>decision({ignore:.4,draft:.5,human:.1}),runAgent:async()=>{throw new Error('must not call');}});
  await assert.rejects(executor.analyze({...base,settings:{...base.settings,writerProvider:'',writerModel:''}}),/低置信决策升级需要模型路由/);
 });
+
+test('GitHub closed items reach analysis with login and actor evidence and instructions for self versus external changes',async()=>{
+  for(const kind of ['issue','pr'])for(const actor of ['owner','other',null]){
+    let request;
+    const executor=new WorkflowExecutor({runAgent:async input=>{request=input;return {result:{summary:'synthetic',importance:0,urgent:false,reason:'synthetic',intervention:'none',evidence:'confirmed'}};}});
+    await executor.analyze({...base,source:{...base.source,platform:'github',metadata:{identity:'owner'}},item:{kind,payload:{state:'closed',author:'author',stateEvents:[{event:'closed',actor}]}}});
+    assert.equal(request.role,kind==='pr'?'review':'investigate');
+    assert.equal(request.input.blocks.find(b=>b.key==='source').value.ownLogin,'owner');
+    assert.equal(request.input.blocks.find(b=>b.key==='content').value.payload.stateEvents[0].actor,actor);
+    assert.match(request.instructions,/用户本人关闭/);assert.match(request.instructions,/其他人关闭/);assert.match(request.instructions,/未知操作者/);
+  }
+});
