@@ -151,3 +151,11 @@ test('过期无需回复不能清理新版本状态；升级只修复当前有�
   await f.store.start();assert.equal(f.card(id).needsHandling,false);assert.equal(f.store.item(id).readVersion,unchanged.readVersion);assert.deepEqual(f.store.item(id).analysis,unchanged.analysis);
   f.store.handling(id,'pending');await f.store.close();await f.store.start();assert.equal(f.card(id).needsHandling,true,'explicit manual handling after migration is retained');
 });
+
+test('B站原分析会话修订为无需回复后，旧草稿不再使条目需要处理',async t=>{
+  const f=await fixture(t,1),id=f.all(f.sources[1])[0].id,{run,receipt}=await f.draft(id);
+  const sessionId='synthetic-revision-no-reply';f.service.bindSession({sessionId,runId:run.id,role:'writer',workspaceId:'ws',cwd:f.directory});
+  await f.service.reviseAnalysisFromSession({sessionId},{operationKey:'ignore-revision',analysis:{...ignore,decision:undefined},reason:'现在无需回复'});
+  assert.equal(f.card(id).needsHandling,false);assert.equal(f.store.draft(receipt.draftId).status,'superseded');
+  assert.equal(f.card(id).status,'unread');assert.equal(f.store.run(run.id).result.intervention,'human');
+});

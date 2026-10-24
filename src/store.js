@@ -183,7 +183,7 @@ class Store {
         if (!this.#get("SELECT value FROM meta WHERE key='comment-ignore-settled-v1'")) {
           for (const row of this.#all("SELECT id FROM items WHERE kind='comment' AND analyzed_version=version AND analysis IS NOT NULL")) {
             const item = this.#itemState(this.#itemRow(row.id));
-            if (conclusion(item.analysis) === 'ignore' && item.analysis.intervention === 'none') this.#settleNoReply(row.id);
+            if (conclusion(item.analysis) === 'ignore' && item.analysis.intervention === 'none') this.#settleNoAction(row.id);
           }
           this.#run("INSERT INTO meta VALUES('comment-ignore-settled-v1','1')");
         }
@@ -728,14 +728,14 @@ class Store {
       return adopted;
     });
   }
-  #settleNoReply(id) {
+  #settleNoAction(id) {
     const row = this.#itemRow(id);
     const draftIds = this.#all("SELECT id FROM drafts WHERE item_id=? AND status IN ('pending-supervision','ready','blocked','stale')", id).map(draft => draft.id);
     if (!['pending', 'later'].includes(row.handling) && !draftIds.length) return;
     if (['pending', 'later'].includes(row.handling)) this.#run("UPDATE items SET handling='none' WHERE id=?", id);
     for (const draftId of draftIds) this.#updateDraft(draftId, { status: 'superseded' });
     this.#project(id);
-    this.#audit('comment.no-reply.settled', { itemId: id, previousHandling: row.handling, draftIds });
+    this.#audit('item.no-action.settled', { itemId: id, previousHandling: row.handling, draftIds });
   }
   #adopt(run, result) {
     const row = required(this.#itemRow(run.itemId), "内容项"), source = this.source(row.source_id);
@@ -743,7 +743,8 @@ class Store {
     if (valid) {
       this.#run("UPDATE items SET analysis=?,analyzed_version=?,context_version=?,analysis_revision=analysis_revision+1,handling=CASE WHEN handling='none' AND ?='human' THEN 'pending' ELSE handling END WHERE id=?", json(result), run.version, run.contextVersion, result.intervention ?? "none", run.itemId);
       this.#advanceAttention(run.itemId);
-      if (row.kind === "comment" && conclusion(result) === "ignore" && result.intervention === "none") this.#settleNoReply(run.itemId);
+      const closedGitHub = source.platform === 'github' && ['issue', 'pr'].includes(row.kind) && this.#get("SELECT 1 FROM item_versions WHERE item_id=? AND version=? AND (lower(json_extract(payload,'$.state')) IN ('closed','merged') OR json_extract(payload,'$.merged')=1)", row.id, row.version);
+      if (result.intervention === "none" && (row.kind === "comment" && conclusion(result) === "ignore" || closedGitHub)) this.#settleNoAction(run.itemId);
       this.#project(run.itemId);
     }
     return valid;

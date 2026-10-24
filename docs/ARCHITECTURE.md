@@ -125,7 +125,7 @@ B站评论的当前有效结论变为无需回复时，Store 同事务清除旧 
 
 `ConsoleService.organize(sourceId, { scope })` 默认使用 `changes`。调度器与 `refresh` 显式使用此范围，只处理内容版本尚未分析或已有分析的真实背景版本已变化的内容。`POST sources/:id/organize` 显式选择 `history`，额外包含 `analysis` 为空的历史基线，仍跳过内容与背景都已完成的项。来源的刷新或整理正在运行时，同来源新请求明确返回忙碌错误，不复用另一个范围的 Promise。
 
-GitHub issue/PR 的关闭或合并状态不影响列表可见性或整理资格；旧 showClosed 查询参数和 includeClosed 布尔配置不再限制范围。API 分页采集 closed/reopened/merged 事件及 actor，来源采集身份进入模型输入 ownLogin，供模型结合旧版本判断是否需要查看。
+GitHub issue/PR 的关闭或合并状态不影响列表可见性或整理资格；关闭项新分析无需介入时也清理旧待处理与未发送旧草稿（发送中/结果不明仍保留）；旧 showClosed 查询参数和 includeClosed 布尔配置不再限制范围。API 分页采集 closed/reopened/merged 事件及 actor，来源采集身份进入模型输入 ownLogin，供模型结合旧版本判断是否需要查看。
 
 整理返回以下结果，并保存到 `source.lastOrganization`，供页面重新打开后查看。
 

@@ -69,3 +69,11 @@ test('cards and historical headers expose state even for API versions with old m
   const db=new DatabaseSync(join(f.directory,'console.sqlite'));db.exec("UPDATE item_versions SET metadata='{}'");db.close();
   assert.equal(f.items()[0].payload.state,'merged');assert.equal(f.store.header(f.items()[0].id).payload.state,'merged');
 });
+
+test('a closed GitHub result requiring no intervention clears old handling while retaining unread',async t=>{
+  const f=await fixture(t);f.setRows([row('issue',1)]);await f.service.refresh(f.source.id);
+  const id=`${f.source.id}:issue:1`;f.store.handling(id,'pending');
+  f.setRows([row('issue',1,'closed')]);await f.service.refresh(f.source.id);
+  assert.equal(f.store.item(id).handling,'none');assert.equal(f.service.items(f.source.id,{filter:'handling'}).total,0);
+  assert.equal(f.service.items(f.source.id,{filter:'unread'}).total,1);
+});
