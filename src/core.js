@@ -407,8 +407,16 @@ class ConsoleService {
   }
   async openConversation(itemId) {
     return this.#job(`conversation:${itemId}`, async () => {
-      const item = required(this.store.item(itemId), "内容项"), source = required(this.store.source(item.sourceId), "来源"), prepared = await this.#prepare(source), existing = this.store.humanSession(itemId, source.workspaceId, item.version, prepared.contextVersion);
-      if (existing) return { sessionId: existing.sessionId };
+      const item = required(this.store.item(itemId), "内容项"), source = required(this.store.source(item.sourceId), "来源");
+      await this.workspaces.resolve(source.workspaceId);
+      const resolveSession = async bindings => this.executor.resolveConversation
+        ? this.executor.resolveConversation({ bindings, workspaceId: source.workspaceId })
+        : bindings[0]?.sessionId;
+      const working = await resolveSession(this.store.conversationSessions(itemId, source.workspaceId));
+      if (working) return { sessionId: working };
+      const prepared = await this.#prepare(source), existing = this.store.humanSession(itemId, source.workspaceId, item.version, prepared.contextVersion);
+      const human = existing && await resolveSession([existing]);
+      if (human) return { sessionId: human };
       const run = this.#newRun(source, item, prepared, "human");
       try {
         const sessionId = await this.executor.conversation({ runId: run.id, item, source: prepared, settings: manualSettings(this.store.settings(), source) });

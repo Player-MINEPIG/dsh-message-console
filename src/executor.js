@@ -34,7 +34,7 @@ export function validateImportance(result) {
   return {importance:Number(ranked[0][0]),confidence:ranked[0][1],margin:ranked[0][1]-ranked[1][1],probabilities};
 }
 export class WorkflowExecutor {
-  constructor({ decision, runAgent, conversation, catalog, models, prepareImages }) { Object.assign(this, { decision, runAgent, conversation, catalog, models, prepareImages }); }
+  constructor({ decision, runAgent, conversation, resolveConversation, catalog, models, prepareImages }) { Object.assign(this, { decision, runAgent, conversation, resolveConversation, catalog, models, prepareImages }); }
   async analyze({ runId, source, item, settings, signal, recordSession, recordDecision }) {
     if(item.kind==='private-message') {
       const request={...(settings.decisionProfile?{provider:settings.decisionProfile}:{}),state:serializeInput(assembleInput(source,item,{language:settings.language,stage:'decision'})),questions:{importance:{type:'choice',instructions:postHistoryText(source)+'\n'+learningGuidanceText(source)+'\n仅评定给定消息范围对用户的重要程度。不生成回复、不推断紧急性，不把媒体占位当作已读媒体；未提供的上下文未知。',criteria:IMPORTANCE}}};
