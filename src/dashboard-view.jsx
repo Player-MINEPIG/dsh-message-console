@@ -19,14 +19,14 @@ export function Dashboard({state,page,onNavigate,order,setOrder,action,pending})
   </main>;
 }
 export function SourcePage({source,state,action,pending,onBack,onEdit,onLearn,onLearningHistory,selected,onSelect,onDeselect=()=>{},detail,revision=0}) {
-  const [query,setQuery]=React.useState(''),[filter,setFilter]=React.useState('all'),[showClosed,setShowClosed]=React.useState(false),[itemOrder,setItemOrder]=React.useState('updated-desc'),[operation,setOperation]=React.useState(null);
+  const [query,setQuery]=React.useState(''),[filter,setFilter]=React.useState('all'),[itemOrder,setItemOrder]=React.useState('updated-desc'),[operation,setOperation]=React.useState(null);
   const [page,setPage]=React.useState(1),[pageSize,setPageSize]=React.useState(10),[factsOpen,setFactsOpen]=React.useState(false);
   const workspaces=useRemoteResource(factsOpen?'workspaces':null);
   const busy=Boolean(operation||state.busy?.includes(`source:${source.id}`));
   const organizeAction=async kind=>{setOperation(kind);try{await action(`sources/${source.id}/${kind}`);}finally{setOperation(null);}};
   const learning=useRemoteResource(`learning?${new URLSearchParams({sourceId:source.id,page:'1',pageSize:'10'})}`,{revision,pollMs:5000});
   const stats=source;
-  const path=`sources/${encodeURIComponent(source.id)}/items?${new URLSearchParams({page:String(page),pageSize:String(pageSize),filter,q:query,showClosed:String(showClosed),order:itemOrder})}`;
+  const path=`sources/${encodeURIComponent(source.id)}/items?${new URLSearchParams({page:String(page),pageSize:String(pageSize),filter,q:query,order:itemOrder})}`;
   const list=useRemoteResource(path,{revision,pollMs:5000}),pagination=list.data;
   const changePage=next=>setPage(next);
   const resetList=change=>{change();setPage(1);};
@@ -48,7 +48,7 @@ export function SourcePage({source,state,action,pending,onBack,onEdit,onLearn,on
     {(source.fetchError||!source.connection.ready)&&<div className="dmc-source-error" role="alert">{source.fetchError||source.connection.reason}</div>}
     {liveReport&&<OrganizationStatus source={source} busy={busy} operation={operation}/>}
     <details className="dmc-source-facts" onToggle={event=>setFactsOpen(event.currentTarget.open)}><summary>来源与整理详情 <span>工作区、抓取时间与整理记录</span></summary><div className="dmc-source-facts-body"><ResourceError error={workspaces.error}/>{source.description&&<p>{source.description}</p>}<dl><div><dt>工作区</dt><dd>{workspace}</dd></div><div><dt>最近抓取</dt><dd>{time(source.fetchedAt)}</dd></div><div><dt>内容更新</dt><dd>{time(stats.changedAt)}</dd></div><div><dt>已整理</dt><dd>{stats.analyzed} / {stats.total} 项</dd></div></dl>{!liveReport&&<OrganizationStatus source={source} busy={false}/>}</div></details>
-    <div className="dmc-item-toolbar"><div className="dmc-filter-buttons">{[['all','全部内容'],['unread','未读变化'],['handling','需要处理']].map(([key,label])=><button key={key} className={filter===key?'active':''} aria-pressed={filter===key} onClick={()=>selectFilter(key)}>{label}</button>)}</div>{source.platform==='github'&&<label className="dmc-display-closed"><input type="checkbox" checked={showClosed} onChange={e=>resetList(()=>setShowClosed(e.target.checked))}/>显示全部（含已关闭 / 已合并）</label>}<select aria-label="内容最后更新时间排序" value={itemOrder} onChange={e=>resetList(()=>setItemOrder(e.target.value))}><option value="updated-desc">最后更新：新到旧</option><option value="updated-asc">最后更新：旧到新</option></select><input aria-label="搜索内容" placeholder="搜索当前来源…" value={query} onChange={e=>resetList(()=>setQuery(e.target.value))}/></div>
+    <div className="dmc-item-toolbar"><div className="dmc-filter-buttons">{[['all','全部内容'],['unread','未读变化'],['handling','需要处理']].map(([key,label])=><button key={key} className={filter===key?'active':''} aria-pressed={filter===key} onClick={()=>selectFilter(key)}>{label}</button>)}</div><select aria-label="内容最后更新时间排序" value={itemOrder} onChange={e=>resetList(()=>setItemOrder(e.target.value))}><option value="updated-desc">最后更新：新到旧</option><option value="updated-asc">最后更新：旧到新</option></select><input aria-label="搜索内容" placeholder="搜索当前来源…" value={query} onChange={e=>resetList(()=>setQuery(e.target.value))}/></div>
     {pagination&&<ListPagination pagination={pagination} pageSize={pageSize} onPage={changePage} onPageSize={size=>resetList(()=>setPageSize(size))} label="上方内容分页"/>}
     <ResourceError error={list.error}/>{list.loading&&!pagination&&<p role="status">正在加载内容…</p>}
     {outsidePage&&<p className="dmc-selection-notice" role="status">正在查看的内容不在当前页，详情仍保留。<button onClick={onDeselect}>关闭详情</button></p>}

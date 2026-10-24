@@ -49,7 +49,7 @@ export function assembleInput(source, item = null, { language, stage = 'generati
   const sharedMaterials = source.resolvedMaterials ?? materialInput(source.materials);
   const scopedMaterials = source.resolvedStageContexts?.[stage]?.materials ?? materialInput(scoped.materials);
   const values = {
-    source: { name: source.name, platform: source.platform, target: source.target, description: source.description ?? '', tags: source.tags ?? [], rules: source.attentionRules ?? '' },
+    source: { name: source.name, platform: source.platform, target: source.target, description: source.description ?? '', tags: source.tags ?? [], rules: source.attentionRules ?? '', ...(source.platform === 'github' ? { ownLogin: source.metadata?.identity ?? null } : {}) },
     context: scoped.context ? { shared: source.context ?? '', [stage]: scoped.context } : source.context ?? '',
     materials: [...sharedMaterials, ...scopedMaterials.map(material => ({ ...material, scope: stage }))],
     content: contentInput(item),

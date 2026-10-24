@@ -180,6 +180,13 @@ class Store {
           restored++;
         }
         if (restored) this.#audit('analysis.restored', { count: restored });
+        if (!this.#get("SELECT value FROM meta WHERE key='comment-ignore-settled-v1'")) {
+          for (const row of this.#all("SELECT id FROM items WHERE kind='comment' AND analyzed_version=version AND analysis IS NOT NULL")) {
+            const item = this.#itemState(this.#itemRow(row.id));
+            if (conclusion(item.analysis) === 'ignore' && item.analysis.intervention === 'none') this.#settleNoReply(row.id);
+          }
+          this.#run("INSERT INTO meta VALUES('comment-ignore-settled-v1','1')");
+        }
         for (const row of this.#all("SELECT id,data FROM learning_batches WHERE status IN ('queued','running')")) this.#writeLearning({ ...parse(row.data), status: "interrupted", error: "进程中断，可重试本批评价整理。" });
         for (const row of this.#all("SELECT id FROM drafts WHERE status='sending'")) this.#updateDraft(row.id, { status: "unknown", error: "上次发送被中断，需核实远端结果。" });
         for (const row of this.#all("SELECT id FROM runs WHERE status='running'")) {
@@ -432,9 +439,8 @@ class Store {
   items(sourceId, input = {}) {
     const source = required(this.source(sourceId), "来源");
     const q = pageQuery(input), args = [sourceId], where = ["i.source_id=?"];
-    const order = input.order ?? 'updated-desc', showClosed = input.showClosed ?? true;
-    if (!['updated-desc', 'updated-asc'].includes(order) || ![true, false, 'true', 'false'].includes(showClosed)) throw new Error('列表显示参数无效');
-    if (source.platform === 'github' && showClosed !== true && showClosed !== 'true') where.push("(i.kind NOT IN ('issue','pr') OR (lower(coalesce(json_extract(v.metadata,'$.state'),json_extract(v.payload,'$.state'),'')) NOT IN ('closed','merged') AND coalesce(json_extract(v.metadata,'$.merged'),json_extract(v.payload,'$.merged'),0)<>1))");
+    const order = input.order ?? 'updated-desc';
+    if (!['updated-desc', 'updated-asc'].includes(order)) throw new Error('列表显示参数无效');
     if (q.filter === "unread") where.push("i.unread=1");
     if (q.filter === "handling") where.push("i.needs_handling=1");
     if (q.query) {
@@ -500,11 +506,10 @@ class Store {
       return { ...s, total: row.total, unread: row.unread, handling: row.handling, analyzed: row.analyzed, unreadUnorganized: row.unorganized, importance: Math.floor((top?.priority ?? 0) / 10), urgent: Boolean(this.#get("SELECT 1 FROM items WHERE source_id=? AND priority%10>0 LIMIT 1", row.id)), priority: top?.priority ?? 0, changedAt: changed ?? "", summaries };
     });
   }
-  candidates(sourceId, scope, { includeClosed = true } = {}) {
+  candidates(sourceId, scope) {
     const total = this.#get("SELECT count(*) n FROM items WHERE source_id=?", sourceId).n;
-    const rows = this.#all(`SELECT i.id,i.version${includeClosed ? '' : ",i.kind,json_extract(v.payload,'$.state') state,json_extract(v.payload,'$.merged') merged"} FROM items i ${includeClosed ? '' : 'JOIN item_versions v ON v.item_id=i.id AND v.version=i.version'} WHERE source_id=? AND (analyzed_version IS NOT i.version ${scope === "history" ? "OR analysis IS NULL" : ""}) ORDER BY i.id`, sourceId);
-    const refs = rows.filter(row => includeClosed || !(['issue','pr'].includes(row.kind) && (['closed','merged'].includes(String(row.state).toLowerCase()) || row.merged === 1))).map(({id,version}) => ({id,version}));
-    return { total, refs, excludedClosed: rows.length - refs.length, unanalysed: this.#get("SELECT count(*) n FROM items WHERE source_id=? AND analysis IS NULL", sourceId).n };
+    const refs = this.#all(`SELECT id,version FROM items WHERE source_id=? AND (analyzed_version IS NOT version ${scope === "history" ? "OR analysis IS NULL" : ""}) ORDER BY id`, sourceId);
+    return { total, refs, excludedClosed: 0, unanalysed: this.#get("SELECT count(*) n FROM items WHERE source_id=? AND analysis IS NULL", sourceId).n };
   }
   organizationReason(id, { version, baseVersion, initial = false, checkRetry = false } = {}) {
     const item = required(this.#itemRow(id), '内容项');
@@ -723,12 +728,22 @@ class Store {
       return adopted;
     });
   }
+  #settleNoReply(id) {
+    const row = this.#itemRow(id);
+    const draftIds = this.#all("SELECT id FROM drafts WHERE item_id=? AND status IN ('pending-supervision','ready','blocked','stale')", id).map(draft => draft.id);
+    if (!['pending', 'later'].includes(row.handling) && !draftIds.length) return;
+    if (['pending', 'later'].includes(row.handling)) this.#run("UPDATE items SET handling='none' WHERE id=?", id);
+    for (const draftId of draftIds) this.#updateDraft(draftId, { status: 'superseded' });
+    this.#project(id);
+    this.#audit('comment.no-reply.settled', { itemId: id, previousHandling: row.handling, draftIds });
+  }
   #adopt(run, result) {
     const row = required(this.#itemRow(run.itemId), "内容项"), source = this.source(row.source_id);
     const valid = row.version === run.version && source.contextVersion === run.sourceContextVersion && source.workspaceId === run.workspaceId && row.analysis_revision === (run.baseAnalysisRevision ?? row.analysis_revision);
     if (valid) {
       this.#run("UPDATE items SET analysis=?,analyzed_version=?,context_version=?,analysis_revision=analysis_revision+1,handling=CASE WHEN handling='none' AND ?='human' THEN 'pending' ELSE handling END WHERE id=?", json(result), run.version, run.contextVersion, result.intervention ?? "none", run.itemId);
       this.#advanceAttention(run.itemId);
+      if (row.kind === "comment" && conclusion(result) === "ignore" && result.intervention === "none") this.#settleNoReply(run.itemId);
       this.#project(run.itemId);
     }
     return valid;

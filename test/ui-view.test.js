@@ -102,19 +102,17 @@ test('card status appears once, with handling separate from importance',()=>{
 });
 
 
-test('GitHub status cards and boolean settings explain closed organization without confusing personal handling',()=>{
+test('GitHub state badges remain distinct from personal handling without a closed organization setting',()=>{
   const html=render(ItemCard,{item:{id:'i',kind:'pr',status:'read',handling:'done',title:'PR',payload:{state:'MERGED'}},onSelect(){}});
   assert.match(html,/已合并/);assert.match(html,/已处理/);
-  const settings=render(SettingFields,{parameters:{includeClosed:{type:'boolean',default:false}},values:{includeClosed:false},onChange(){},effective:{includeClosed:{value:false,origin:'global'}}});
-  assert.match(settings,/GitHub 整理范围/);assert.match(settings,/始终采集全部状态/);assert.match(settings,/<option value="false" selected="">关闭/);assert.match(settings,/<option value="">继承（关闭）/);
-  const inherited=render(SettingFields,{parameters:{includeClosed:{type:'boolean',default:false}},values:{},onChange(){},effective:{includeClosed:{value:true,origin:'global'}}});
-  assert.match(inherited,/<option value="" selected="">继承（开启）/);
+  const settings=render(SettingFields,{parameters:{},values:{includeClosed:false},onChange(){}});
+  assert.doesNotMatch(settings,/GitHub 整理范围|整理已关闭/);
 });
 
 test('source list displays independent closed visibility and time direction controls with honest organization triggers',()=>{
   const source={id:'s',name:'GitHub',platform:'github',connection:{ready:true}},props={source,state:{},action(){}};
   const html=render(SourcePage,props);
-  assert.match(html,/显示全部（含已关闭 \/ 已合并）/);assert.match(html,/<input type="checkbox"\/>/);
+  assert.doesNotMatch(html,/显示全部（含已关闭|dmc-display-closed/);
   assert.match(html,/aria-label="内容最后更新时间排序"/);assert.match(html,/<option value="updated-desc" selected="">最后更新：新到旧/);assert.match(html,/最后更新：旧到新/);
   assert.doesNotMatch(render(SourcePage,{...props,source:{...source,platform:'bilibili'}}),/显示全部（含已关闭/);
   for(const [trigger,label] of [['manual','手动触发'],['scheduled','定时触发'],[undefined,'触发来源未知']]) {

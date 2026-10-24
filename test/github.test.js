@@ -7,7 +7,7 @@ test('GitHub follows Link pagination and keeps PR namespace separate from issue'
   const request=async url=>{
     seen.push(url);const path=new URL(url).pathname;
     if(path.endsWith('/issues'))return new Response(JSON.stringify([{id:10,number:1,title:'issue',body:'text',updated_at:'2026-01-02T00:00:00Z',html_url:'https://github.com/o/r/issues/1',state:'open',user:{login:'a'},labels:[]}]),{headers:{link:'<https://api.github.com/repos/o/r/issues?page=2>; rel="next"'}});
-    if(path.endsWith('/comments'))return new Response('[]');
+    if(path.endsWith('/comments') || path.endsWith('/events'))return new Response('[]');
     throw new Error(url);
   };
   const connector=new GitHubConnector({request:async url=>url.includes('page=2')?new Response('[]'):request(url)});
@@ -47,4 +47,20 @@ test('GitHub release detail uses tag endpoint and rejects incomplete pagination'
   const connector=new GitHubConnector({request:async url=>{assert.equal(new URL(url).pathname,'/repos/o/r/releases/tags/v%2F1');return jsonResponse({id:10,name:'release',tag_name:'v/1',body:'notes',updated_at:'2026-10-18T00:00:00Z'});}});
   const release=await connector.getItem({target:'o/r'},{kind:'release',payload:{tag:'v/1'}});assert.equal(release.remoteId,'release:10');assert.equal(release.updatedAt,'2026-10-18T00:00:00Z');
   const broken=new GitHubConnector({maxPages:1,request:async()=>jsonResponse([],{link:'<https://api.github.com/repos/o/r/issues?page=2>; rel="next"'})});await assert.rejects(broken.fetch({target:'o/r',types:['issue']}),/分页/);
+});
+
+test('state events include every paginated close, reopen and merge actor, independent of content author',async()=>{
+  const events=[{id:1,event:'closed',actor:{login:'self'},created_at:'2026-10-20T00:00:00Z'},{id:2,event:'reopened',actor:{login:'other'},created_at:'2026-10-21T00:00:00Z'}];
+  const connector=new GitHubConnector({request:async url=>{
+    const u=new URL(url);
+    if(u.pathname.endsWith('/events'))return u.searchParams.get('page')==='2'?jsonResponse([{id:3,event:'closed',actor:null,created_at:'2026-10-22T00:00:00Z'},{id:4,event:'labeled',actor:{login:'irrelevant'}}]):jsonResponse(events,{link:'<https://api.github.com/repos/o/r/issues/1/events?page=2>; rel="next"'});
+    return jsonResponse([]);
+  }});
+  const item=await connector.readDiscussion({target:'o/r'},1,'issue',{issue:{id:10,title:'issue',state:'closed',user:{login:'author'}}});
+  assert.deepEqual(item.payload.stateEvents.map(e=>[e.event,e.actor]),[['closed','self'],['reopened','other'],['closed',null]]);
+  assert.equal(item.payload.author,'author');assert.equal(item.payload.stateEvents[2].createdAt,'2026-10-22T00:00:00Z');
+});
+test('failed state event pagination fails collection instead of guessing the closing actor',async()=>{
+  const connector=new GitHubConnector({request:async url=>new URL(url).pathname.endsWith('/events')?new Response('{}',{status:403}):jsonResponse([])});
+  await assert.rejects(connector.readDiscussion({target:'o/r'},1,'issue',{issue:{id:1,state:'closed'}}),/403/);
 });

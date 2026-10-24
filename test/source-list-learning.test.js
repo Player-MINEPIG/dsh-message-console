@@ -31,7 +31,7 @@ async function post(service, path) {
   assert.equal(code, 200); return result;
 }
 
-test('source list applies closed display, search and status filters before pagination and preserves priority in both time directions', async t => {
+test('source list includes all GitHub states and applies search and status filters before pagination and preserves priority in both time directions', async t => {
   const f = await fixture(t), id = remote => `${f.source.id}:${remote}`;
   f.store.applyFetch(f.source.id, [], {}, '2026-01-01', fingerprint);
   const rows = Array.from({ length: 24 }, (_, i) => entry(`open-${String(i).padStart(2, '0')}`, { updatedAt: `2026-01-${String(i + 1).padStart(2, '0')}T00:00:00Z` }));
@@ -42,27 +42,28 @@ test('source list applies closed display, search and status filters before pagin
   f.store.handling(id('open-01'), 'pending'); f.store.handling(id('open-03'), 'pending'); f.store.handling(id('closed'), 'pending');
   for (const order of ['updated-desc', 'updated-asc']) {
     const first = f.service.items(f.source.id, { order });
-    assert.equal(first.total, 25); assert.equal(first.pageCount, 3);
-    assert.deepEqual(first.items.slice(0, 3).map(item => item.remoteId), ['open-03', 'open-01', 'open-02']);
-    assert.equal(first.items[3].remoteId, order === 'updated-desc' ? 'open-23' : 'release');
+    assert.equal(first.total, 28); assert.equal(first.pageCount, 3);
+    assert.equal(first.items[0].remoteId,'open-03');
+    assert.deepEqual(new Set(first.items.slice(1,3).map(item=>item.remoteId)),new Set(['open-01','closed']));
+    assert.equal(first.items[3].remoteId,'open-02');
     const all = [1, 2, 3].flatMap(page => f.service.items(f.source.id, { page, order }).items);
-    assert.equal(new Set(all.map(item => item.id)).size, 25);
-    assert.ok(!all.some(item => ['closed', 'merged', 'merged-flag'].includes(item.remoteId)));
-    assert.equal(f.service.items(f.source.id, { filter: 'handling', order }).total, 2);
+    assert.equal(new Set(all.map(item => item.id)).size, 28);
+    assert.ok(['closed','merged','merged-flag'].every(id=>all.some(item=>item.remoteId===id)));
+    assert.equal(f.service.items(f.source.id, { filter: 'handling', order }).total, 3);
     const shown = f.service.items(f.source.id, { filter: 'handling', order, showClosed: 'true' });
     assert.equal(shown.total, 3); assert.equal(shown.items[0].remoteId, 'open-03');
   }
   assert.equal(f.service.items(f.source.id, { page: 99 }).page, 3);
   assert.equal(f.service.items(f.source.id, { showClosed: true }).total, 28);
-  assert.equal(f.service.items(f.source.id, { q: 'merged' }).total, 0);
+  assert.equal(f.service.items(f.source.id, { q: 'merged' }).total, 2);
   assert.equal(f.service.items(f.source.id, { q: 'merged', showClosed: true }).total, 2);
   assert.equal(f.store.items(f.source.id).total, 28, 'internal tools retain access to all collected items');
   f.store.markRead(id('open-01')); f.store.handling(id('open-03'), 'done');
   const unread = f.service.items(f.source.id, { filter: 'unread' });
-  assert.equal(unread.total, 24); assert.equal(unread.items[0].remoteId, 'open-02');
-  assert.equal(f.service.items(f.source.id, { filter: 'handling' }).total, 1);
+  assert.equal(unread.total, 27); assert.equal(unread.items[0].remoteId, 'closed');
+  assert.equal(f.service.items(f.source.id, { filter: 'handling' }).total, 2);
   assert.throws(() => f.service.items(f.source.id, { order: 'unsafe' }), /参数/);
-  assert.throws(() => f.service.items(f.source.id, { showClosed: 'unsafe' }), /参数/);
+  assert.equal(f.service.items(f.source.id, { showClosed: false }).total,28,'old clients cannot hide closed items');
 });
 
 test('platform timestamp enrichment updates ordering without changing content versions, analysis, read state or attention', async t => {

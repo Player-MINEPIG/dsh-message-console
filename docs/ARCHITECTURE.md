@@ -119,9 +119,13 @@ DSH通过Assembler native前置system定义任务与不可信输入边界，pre-
 
 `src/client.jsx` 用单个页面状态选择总览、全部平台、全部来源、平台来源、来源详情、全局配置、新建或编辑来源。插件没有内部侧边栏。`src/dashboard-view.jsx` 展示列表和内容项，`src/source-editor.jsx` 负责来源表单及可排序的真实输入预览，`src/ui-shared.jsx` 保存通用字段与请求组件。
 
+B站评论的当前有效结论变为无需回复时，Store 同事务清除旧 pending/later，未发送的 pending-supervision/ready/blocked/stale 草稿标为 superseded。read_version、正文和历史不变，sending/unknown 保留核实。启动时由 meta 的 comment-ignore-settled-v1 标记执行一次旧状态修正并记录审计；不对过期分析应用，也不会反复覆盖升级后用户主动指定的状态。
+
 ## 手动与自动整理范围
 
 `ConsoleService.organize(sourceId, { scope })` 默认使用 `changes`。调度器与 `refresh` 显式使用此范围，只处理内容版本尚未分析或已有分析的真实背景版本已变化的内容。`POST sources/:id/organize` 显式选择 `history`，额外包含 `analysis` 为空的历史基线，仍跳过内容与背景都已完成的项。来源的刷新或整理正在运行时，同来源新请求明确返回忙碌错误，不复用另一个范围的 Promise。
+
+GitHub issue/PR 的关闭或合并状态不影响列表可见性或整理资格；旧 showClosed 查询参数和 includeClosed 布尔配置不再限制范围。API 分页采集 closed/reopened/merged 事件及 actor，来源采集身份进入模型输入 ownLogin，供模型结合旧版本判断是否需要查看。
 
 整理返回以下结果，并保存到 `source.lastOrganization`，供页面重新打开后查看。
 
