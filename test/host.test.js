@@ -183,6 +183,7 @@ test('PTC host tools read collected comments and commit immutable drafts and ind
     await service.configure({ writerProvider: 'offline-db', writerModel: 'db-writer', supervisorProvider: 'offline-db', supervisorModel: 'db-supervisor', decisionConfidence: .8, decisionMargin: .2 });
     const source = await service.saveSource({ name: '真实宿主工具测试', workspaceId: registeredWorkspace.id, platform: 'bilibili', target: 'BV1111111111', types: ['comment'], stageContexts: { generation: { context: 'WRITER_CONTEXT_ONLY' }, supervision: { context: 'SUPERVISOR_CONTEXT_ONLY' } } });
     await service.refresh(source.id, { organize: false });
+    const humanEntry = await service.openConversation(service.items(source.id).items[0].id);
     const report = await service.organize(source.id, { scope: 'history' }); assert.equal(report.failed, 0, JSON.stringify(report)); assert.equal(report.completed, 1);
     const item = service.items(source.id).items[0], run = service.runs(item.id).items[0];
     const draft = service.draft(service.drafts(item.id).items[0].id);
@@ -200,7 +201,8 @@ test('PTC host tools read collected comments and commit immutable drafts and ind
       assert.ok(!log.events.some(e => e.type === 'assistant/message' && e.data.message.content.some(b => b.type === 'text')));
     }
     await service.configure({ writerProvider: 'offline-db', writerModel: 'db-human-readonly', supervisorProvider: 'offline-db', supervisorModel: 'db-supervisor' });
-    const { sessionId } = await service.openConversation(item.id);
+    assert.equal((await service.openConversation(item.id)).sessionId, run.sessions.find(link => link.role === 'writer').sessionId);
+    const { sessionId } = humanEntry;
     await executorOwner.dispose();
     const { setSandboxMode } = await f.load('dsh-sandbox-policy');
     let human = await ctx.agents.resume({ resumeSessionId: sessions.SessionId(sessionId), agentOptions: { provider: 'offline-db', model: 'db-human-readonly' }, async setup(agentCtx, agent) { await ctx.agentPresets.mount(agentCtx, ctx.sessionProjections.stateOf(agent.session, 'agentPreset')); } });
