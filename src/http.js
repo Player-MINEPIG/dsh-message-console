@@ -71,6 +71,7 @@ function createHandler(service, admission) {
       else if (path[0] === "sources" && path.length === 1) result = await service.saveSource(body);
       else if (path[0] === "sources" && path.length === 2) result = await service.saveSource(body, path[1]);
       else if (path[0] === "sources" && path[2] === "refresh" && path.length === 3) result = await service.refresh(path[1]);
+      else if (path[0] === "sources" && path[2] === "dismiss-organization-warning" && path.length === 3) result = service.dismissOrganizationWarning(path[1], body);
       else if (path[0] === "sources" && path[2] === "organize" && path.length === 3) result = await service.organize(path[1], { scope: "history" });
       else if (path[0] === "items" && path[2] === "feedback" && path.length === 3) result = service.saveFeedback(path[1], body);
       else if (path[0] === "items" && path[2] === "read" && path.length === 3) await service.markRead(path[1], body.version);
