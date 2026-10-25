@@ -1,3 +1,4 @@
+import { CredentialsPanel } from './credentials-view.jsx';
 import { canDraft } from './content-capabilities.js';
 import { ImageGallery, ImageCachePanel } from './images-view.jsx';
 import { ChangeReason } from './change-reason-view.jsx';
@@ -54,8 +55,8 @@ export function ConsoleApp({openSession=()=>{},close,demo=false}) {
   </div>;
 }
 function GlobalSettings({state,action,pending,catalog}) {
-  const [values,setValues]=useState(state.settings);
-  return <main className="dmc-settings dmc-global-settings"><span className="dmc-eyebrow">MAKE IT YOURS</span><h2>全局配置</h2><p className="dmc-muted">默认值按能力生效。来源可以单独覆盖，发布授权独立管理。清空字段恢复内置默认值。</p><CatalogStatus catalog={catalog}/><ModelWorkflowInfo/><form onSubmit={event=>{event.preventDefault();void action('settings',values);}}><SettingFields catalog={catalog} parameters={state.parameters} values={values} onChange={setValues}/><button className="dmc-primary" disabled={pending}>保存默认值</button></form><ImageCachePanel revision={state.revision}/></main>;
+  const [values,setValues]=useState(state.settings),[tab,setTab]=useState('defaults');
+  return <main className="dmc-settings dmc-global-settings"><span className="dmc-eyebrow">MAKE IT YOURS</span><h2>全局配置</h2><nav className="dmc-settings-tabs" aria-label="全局配置分类"><button aria-pressed={tab==='defaults'} onClick={()=>setTab('defaults')}>默认配置</button><button aria-pressed={tab==='credentials'} onClick={()=>setTab('credentials')}>平台凭据</button></nav>{tab==='credentials'?<CredentialsPanel/>:<><p className="dmc-muted">默认值按能力生效。来源可以单独覆盖，发布授权独立管理。清空字段恢复内置默认值。</p><CatalogStatus catalog={catalog}/><ModelWorkflowInfo/><form onSubmit={event=>{event.preventDefault();void action('settings',values);}}><SettingFields catalog={catalog} parameters={state.parameters} values={values} onChange={setValues}/><button className="dmc-primary" disabled={pending}>保存</button></form><ImageCachePanel revision={state.revision}/></>}</main>;
 }
 function Detail({selection,source,revision,action,pending,openSession,close,onFeedbackDirty,onFeedbackSaved}) {
   const root=`items/${encodeURIComponent(selection.id)}`;

@@ -9,8 +9,9 @@ import { createDshExecutor, createDshWorkspaces } from './dsh.js';
 import { createHandler } from './http.js';
 import { GitHubConnector } from './connectors/github.js';
 import { BrowserConnector } from './connectors/browser.js';
-import { CookieTransport } from './connectors/cookies.js';
-import { BilibiliConnector } from './connectors/bilibili.js';
+import { PlatformCredentials } from './credentials/index.js';
+import { BilibiliCredentials } from './credentials/bilibili.js';
+import { GitHubCredentials } from './credentials/github.js';
 import { GitHubGhConnector } from './connectors/github-gh.js';
 import { installAgentTools } from './agent-tools.js';
 
@@ -27,15 +28,14 @@ export async function apply(ctx, config) {
     github,
     bilibili: new BrowserConnector('bilibili', bridge),
   };
-  if(config.cookieFile) {
-    const transport = new CookieTransport({cookieFile:config.cookieFile});
-    connectors.bilibili = new BilibiliConnector(transport);
-  }
+  const bilibiliCredentials = new BilibiliCredentials({ file: join(config.storageDir, 'credentials', 'bilibili.json'), legacyFile: config.cookieFile, connectors, sources: () => store.sources() });
+  await bilibiliCredentials.initialize();
   const workspaces = createDshWorkspaces(ctx);
   let service;
   const executor = createDshExecutor(ctx, { createUserMessage, SessionId, service: () => service, timeoutMs: config.timeoutMs, workspaces });
   const imageCache = await new ImageCache(join(config.storageDir, 'images'), { settings: () => store.settings() }).start();
   service = new ConsoleService({ store, connectors, executor, workspaces, imageCache });
+  service.credentials = new PlatformCredentials({ github: new GitHubCredentials(github), bilibili: bilibiliCredentials }, { assertIdle: () => service.assertCredentialsIdle() });
   await installAgentTools(ctx, service);
   ctx.provide('messageConsole', service);
   ctx.effect(() => () => service.close());
