@@ -48,3 +48,5 @@
 .dmc-settings-tabs,.dmc-credential-actions{display:flex;gap:10px;flex-wrap:wrap;margin:16px 0}.dmc-settings-tabs button[aria-pressed="true"]{background:#426043;color:white}.dmc-credentials{display:grid;gap:20px}.dmc-credential-card{padding:20px;border:1px solid #dce2d8;border-radius:14px;min-width:0}.dmc-credential-card header{display:flex;align-items:center;justify-content:space-between;gap:12px}.dmc-credential-card h3{margin:0}.dmc-credential-card p{overflow-wrap:anywhere}.dmc-credential-card label{display:grid;gap:8px}.dmc-credential-card input{box-sizing:border-box;width:100%;min-width:0}.dmc-credential-login{padding:12px;border-radius:8px;background:#eef2e9}.dmc-device-code{font-family:monospace;font-size:1.2em;letter-spacing:2px}
 
 .dmc-global-settings .dmc-credential-card form{display:block;margin-top:14px}.dmc-credential-card>p{margin-top:8px}
+
+.dmc-organization-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}.dmc-organization-heading>button{flex-shrink:0;font-size:12px;padding:5px 10px}

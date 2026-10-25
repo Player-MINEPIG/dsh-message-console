@@ -70,3 +70,11 @@ test('changed-comment endpoint keeps owner authentication and forwards both immu
  const result=await get({'x-test-owner':'1'});assert.equal(result.code,200);assert.equal(result.data.items[0].version,'old');
  assert.deepEqual(calls,[{id:'source:root',query:{version:'new',baseVersion:'old',page:'2',pageSize:'10'}}]);
 });
+
+test('warning dismissal requires admission and write headers and forwards the exact report identity',async()=>{
+ const {Readable}=await import('node:stream');const calls=[];
+ const handler=createHandler({dismissOrganizationWarning:(id,body)=>{calls.push({id,body});return {ok:true};}},req=>req.headers['x-test-owner']==='1'?{}:{rejection:401});
+ async function call(headers){const req=Readable.from([Buffer.from(JSON.stringify({reportId:'report-1'}))]);Object.assign(req,{method:'POST',url:'/api/dsh-message-console/sources/source-1/dismiss-organization-warning',headers});let status;await handler(req,{writeHead(code){status=code;},end(){}});return status;}
+ assert.equal(await call({}),401);assert.equal(await call({'x-test-owner':'1','content-type':'application/json'}),403);assert.equal(calls.length,0);
+ assert.equal(await call({'x-test-owner':'1','content-type':'application/json','x-dsh-message-console':'1'}),200);assert.deepEqual(calls,[{id:'source-1',body:{reportId:'report-1'}}]);
+});

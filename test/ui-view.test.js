@@ -202,3 +202,14 @@ test('settings explain the per-turn limit and render editable bounds with inheri
  const html=render(SettingFields,{parameters:{agentTimeoutSeconds:{scope:'common',type:'number',default:600,min:1,max:1800}},values:{},onChange(){}});
  assert.match(html,/单轮执行时限（秒）/);assert.match(html,/远端任务回报等待/);assert.match(html,/min="1"/);assert.match(html,/max="1800"/);assert.match(html,/placeholder="600"/);
 });
+
+test('organization failure has a close entry; dismissed report stays in details and new failures surface again',()=>{
+ const source={id:'s',name:'来源',platform:'github',connection:{ready:true},organizationReportId:'report-1',lastOrganization:{status:'failed',failed:1,errors:[{itemId:'i',title:'内容',message:'synthetic failure'}]}};
+ const props={source,state:{busy:[]},action(){},onOrganize(){}};
+ const open=render(SourcePage,props);assert.match(open,/关闭提示/);assert.ok(open.indexOf('synthetic failure')<open.indexOf('<details class="dmc-source-facts"'));
+ const dismissed=render(SourcePage,{...props,source:{...source,dismissedOrganizationId:'report-1'}});
+ assert.doesNotMatch(dismissed,/关闭提示/);assert.ok(dismissed.indexOf('synthetic failure')>dismissed.indexOf('<details class="dmc-source-facts"'));
+ assert.match(render(SourcePage,{...props,source:{...source,organizationReportId:'report-2',dismissedOrganizationId:'report-1'}}),/关闭提示/);
+ assert.doesNotMatch(render(SourcePage,{...props,state:{busy:['source:s']}}),/关闭提示/);
+ assert.match(render(SourcePage,{...props,pending:true}),/<button type="button" disabled="" title="关闭本轮提示/);
+});

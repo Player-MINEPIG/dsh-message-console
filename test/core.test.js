@@ -273,3 +273,29 @@ test('execution limit inherits backend default, global setting and source overri
  assert.equal(service.source(f.source.id).effective.agentTimeoutSeconds.value,900);
  for(const value of [0,1801,Infinity,'300'])await assert.rejects(service.configure({agentTimeoutSeconds:value}),/设置值无效/);
 });
+
+test('closing an organization warning persists only that report, preserves results and rejects stale dismissal',async t=>{
+ const f=await setup(t);await f.service.refresh(f.source.id,{organize:false});
+ f.executor.analyze=async()=>{throw new Error('synthetic failure');};
+ const first=await f.service.organize(f.source.id,{scope:'history'}),source=f.service.source(f.source.id);
+ const item=f.items()[0],runs=f.runs(),revision=source.revision,context=source.contextVersion;
+ assert.equal(first.failed,1);assert.ok(source.organizationReportId);
+ f.service.dismissOrganizationWarning(source.id,{reportId:source.organizationReportId});
+ f.service.dismissOrganizationWarning(source.id,{reportId:source.organizationReportId});
+ await f.store.close();await f.store.start();
+ const dismissed=f.service.source(source.id);
+ assert.equal(dismissed.dismissedOrganizationId,source.organizationReportId);assert.deepEqual(dismissed.lastOrganization,first);
+ assert.equal(dismissed.revision,revision);assert.equal(dismissed.contextVersion,context);assert.deepEqual(f.items()[0],item);assert.deepEqual(f.runs(),runs);
+ await f.service.saveSource({...dismissed,name:'renamed'},source.id);
+ assert.equal(f.service.source(source.id).dismissedOrganizationId,source.organizationReportId);
+ await f.service.organize(source.id,{scope:'history'});const next=f.service.source(source.id);
+ assert.notEqual(next.organizationReportId,source.organizationReportId);assert.notEqual(next.dismissedOrganizationId,next.organizationReportId);
+ assert.throws(()=>f.service.dismissOrganizationWarning(source.id,{reportId:source.organizationReportId}),/已更新/);
+ assert.throws(()=>f.service.dismissOrganizationWarning(source.id,{}),/已更新/);
+ // Existing reports have no id; their warning can still be dismissed without rewriting the report.
+ const {id,...legacy}=first;f.store.updateSource(source.id,{lastOrganization:legacy});
+ const legacyId=f.service.source(source.id).organizationReportId;f.service.dismissOrganizationWarning(source.id,{reportId:legacyId});
+ assert.deepEqual(f.service.source(source.id).lastOrganization,legacy);assert.equal(f.service.source(source.id).dismissedOrganizationId,legacyId);
+ const other=await f.service.saveSource({...source,name:'other'},undefined);
+ assert.equal(f.service.source(other.id).dismissedOrganizationId,undefined);
+});

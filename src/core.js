@@ -10,6 +10,7 @@ import { suggestionTarget, metadataSuggestions } from "./source-suggestions.js";
 import { conclusion } from './change-reason.js';
 import { automaticReplyProblem, replyTarget } from "./publication.js";
 const fingerprint = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const organizationReportId = report => report ? report.id ?? fingerprint(report) : null;
 const nowISO = (clock) => new Date(clock()).toISOString();
 const required = (value, label) => {
   if (!value) throw new Error(`${label}不存在`);
@@ -48,7 +49,7 @@ class ConsoleService {
   }
   #sourceView(source) {
     const connection=this.connectors[source.platform]?.status?.() ?? { ready: false, reason: "连接器不可用" };
-    return { ...source, effective: resolveSettings(this.store.settings(), source, this.parameters), connection: isPrivateSource(source) ? {...connection,canPublish:false,reason:connection.ready?"Chrome Cookie · 私信只读采集":connection.reason} : connection };
+    return { ...source, organizationReportId: organizationReportId(source.lastOrganization), effective: resolveSettings(this.store.settings(), source, this.parameters), connection: isPrivateSource(source) ? {...connection,canPublish:false,reason:connection.ready?"Chrome Cookie · 私信只读采集":connection.reason} : connection };
   }
   overview(query = {}) {
     const sources = this.store.overviewSources().map((source) => {
@@ -65,6 +66,13 @@ class ConsoleService {
   }
   source(id) {
     return this.#sourceView(required(this.store.source(id), "来源"));
+  }
+  dismissOrganizationWarning(id, { reportId } = {}) {
+    const source = required(this.store.source(id), "来源");
+    if (!reportId || reportId !== organizationReportId(source.lastOrganization)) throw new Error('整理记录已更新，请刷新后再关闭提示');
+    if (!source.lastOrganization.failed) throw new Error('当前整理记录没有失败提示');
+    if (source.dismissedOrganizationId !== reportId) this.store.updateSource(id, { dismissedOrganizationId: reportId });
+    return { ok: true };
   }
   items(id, query) {
     return this.store.items(id, query);
@@ -359,7 +367,7 @@ class ConsoleService {
     } catch (error) {
       preparationError = error;
     }
-    const { total, refs, unanalysed, excludedClosed } = this.store.candidates(sourceId, scope), summary = { sourceId, scope, trigger, contextVersion: prepared?.contextVersion ?? source.contextVersion, startedAt: nowISO(this.clock), total, excludedClosed, candidates: refs.length, completed: 0, failed: 0, skipped: 0, errors: [] };
+    const { total, refs, unanalysed, excludedClosed } = this.store.candidates(sourceId, scope), summary = { id: randomUUID(), sourceId, scope, trigger, contextVersion: prepared?.contextVersion ?? source.contextVersion, startedAt: nowISO(this.clock), total, excludedClosed, candidates: refs.length, completed: 0, failed: 0, skipped: 0, errors: [] };
     for (const ref of refs) {
       if (this.#closed) break;
       const item = required(this.store.item(ref.id), "内容项");
