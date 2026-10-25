@@ -1,3 +1,5 @@
+import { resolveModelFallback } from './model-fallback.js';
+import { modelRoute } from './model-selection.js';
 import { isPrivateSource } from './content-capabilities.js';
 import { createModelCatalog } from './model-catalog.js';
 import { assembleInput, serializeInput } from './input-assembly.js';
@@ -37,7 +39,7 @@ export function createDshWorkspaces(ctx) {
 export function sessionFailure(reason, sessionId, timing = {}) {
   const failure = reason?.error ?? {};
   const cause = reason?.kind === 'aborted' ? reason.reason : undefined;
-  const timeout = cause?.kind === 'hook' && /^message-console timeout after \d+ms$/.test(cause.reason ?? '');
+  const timeout = cause?.kind === 'hook' && /^message-console timeout after \d+(?:\.\d+)?ms$/.test(cause.reason ?? '');
   const cancellation = timeout ? 'timeout' : cause?.kind === 'hook' ? cause.reason === 'message-console owner disposed' ? 'owner' : cause.reason === 'message-console signal cancelled' ? 'signal' : 'hook' : cause?.kind;
   const code = timeout ? 'TIMEOUT' : typeof failure.code === 'string' ? failure.code : (reason?.kind ?? 'missing-turn-end').toUpperCase().replaceAll('-', '_');
   const messages = { aborted: '会话已中断', 'max-tokens': '输出达到长度上限', completed: '会话完成但未取得预期结果' };
@@ -125,10 +127,24 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
   }
   async function runAgent(options) {
     if (!options.transientImages) return runSession(options);
-    const memory = await openMemoryImageModel(ctx, { ...options, images: options.transientImages });
-    try { return { ...await runSession(options, memory), imageInput: memory.summary() }; } finally { await memory.close(); }
+    const transports = new Map();
+    let current;
+    const memory = {
+      isDispatch: request => [...transports.values()].some(transport => transport.isDispatch(request)),
+      async *stream(request, messageId) {
+        const key = JSON.stringify([request.provider, request.model]);
+        current = transports.get(key);
+        if (!current) {
+          current = await openMemoryImageModel(ctx, { provider: request.provider, model: request.model, signal: request.signal, images: [...options.transientImages] });
+          transports.set(key, current);
+        }
+        yield* current.stream(request, messageId);
+      },
+    };
+    try { return { ...await runSession(options, memory), imageInput: current?.summary() }; }
+    finally { try { await Promise.all([...transports.values()].map(transport => transport.close())); } finally { options.transientImages.length = 0; } }
   }
-  async function runSession({ role, input, instructions, provider, model, signal, onSession, title, workspaceId, postHistoryInstruction, runId, batchId, draftId }, memory) {
+  async function runSession({ role, input, instructions, provider, model, signal, onSession, title, workspaceId, postHistoryInstruction, runId, batchId, draftId, timeoutMs: stageTimeoutMs = timeoutMs }, memory) {
     signal?.throwIfAborted();
     const reused = await existingAnalysis({runId,role,workspaceId,provider,model});
     const created = reused ?? await create({ provider, model, instructions, title, onSession, workspaceId, postHistoryInstruction, runId, batchId, role, draftId });
@@ -177,14 +193,14 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
         });
       } else agent.followup(message);
       startedAt = Date.now();
-      timer = setTimeout(()=>!turnEnded && ownedTurn !== undefined && agent.cancel({kind:'hook',reason:`message-console timeout after ${timeoutMs}ms`},{keepInbox:true}),timeoutMs); timer.unref?.();
+      timer = setTimeout(()=>!turnEnded && ownedTurn !== undefined && agent.cancel({kind:'hook',reason:`message-console timeout after ${stageTimeoutMs}ms`},{keepInbox:true}),stageTimeoutMs); timer.unref?.();
       signal?.addEventListener('abort',cancelSignal,{once:true});
       if (signal?.aborted) cancelSignal();
       await ctx.sessions.flush(agent.session);
       const end = await Promise.race([turnEnd,agent.whenIdle().then(()=>agent.session.snapshotEvents().findLast(event=>event.type==='turn/end' && event.data.turn===ownedTurn))]);
       await ctx.sessions.flush(agent.session);
       signal?.throwIfAborted();
-      if (end?.data.reason.kind !== 'completed') throw sessionFailure(end?.data.reason,sessionId,{timeoutMs,elapsedMs:Date.now()-startedAt});
+      if (end?.data.reason.kind !== 'completed') throw sessionFailure(end?.data.reason,sessionId,{timeoutMs:stageTimeoutMs,elapsedMs:Date.now()-startedAt});
       return role === 'learning' ? domain().requireLearningSubmission(sessionId) : domain().requireSubmission(sessionId,runId);
     } finally {
       clearTimeout(timer); stopImages(); stopImageTools(); stopEvent(); stopDiscard(); stopClaim(); routeStop?.(); signal?.removeEventListener('abort',cancelSignal);
@@ -218,6 +234,7 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
     prepareImages: request => escalationImages(ctx, domain(), request),
     decision: (request, options) => { if (!ctx.decisionModels?.ask) throw new Error('Jev decisionModels 服务不可用'); return ctx.decisionModels.ask(request, options); },
     runAgent, conversation, resolveConversation,
+    resolveRoute: (route, {supervisor = false, signal} = {}) => resolveModelFallback(ctx, route, () => modelRoute(domain().store.settings(), supervisor), signal),
     ...createModelCatalog(ctx),
   });
 }

@@ -61,3 +61,15 @@ test('GitHub closed items reach analysis with login and actor evidence and instr
     assert.match(request.instructions,/用户本人关闭/);assert.match(request.instructions,/其他人关闭/);assert.match(request.instructions,/未知操作者/);
   }
 });
+
+test('stage limit reaches generation, escalation, supervision and learning in milliseconds',async()=>{
+ const calls=[],routes=[];
+ const executor=new WorkflowExecutor({resolveRoute:async(route,options)=>{routes.push(options);return route;},decision:async()=>decision({ignore:.45,draft:.45,human:.1}),runAgent:async input=>{calls.push(input);return {result:input.role==='decision-escalation'?{choice:'ignore',certain:true,reason:'无需回复'}:{summary:'合成',importance:0,urgent:false,reason:'合成',intervention:'none',evidence:'confirmed'}};}});
+ const args={...base,settings:{...base.settings,agentTimeoutSeconds:900}};
+ await executor.analyze(args);
+ await executor.analyze({...args,item:{kind:'issue'}});
+ await executor.supervise({...args,draft:{id:'draft',body:'synthetic'}});
+ await executor.learn({...args,batchId:'batch'});
+ assert.deepEqual(calls.map(call=>call.role),['decision-escalation','investigate','supervisor','learning']);
+ assert.ok(calls.every(call=>call.timeoutMs===900000));assert.equal(routes[2].supervisor,true);
+});

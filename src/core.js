@@ -19,7 +19,7 @@ const errorText = (error) => String(error?.publicMessage ?? error?.message ?? er
 const connectorIdentity = connector => connector?.status?.().identity?.id ?? null;
 const roles = ["writer", "review", "investigate", "decision-escalation", "supervisor", "human"];
 const analysisRoles = ["writer", "review", "investigate"];
-const manualSettings = (global,source) => ({...valuesOf(resolveSettings(global,source)),...(isPrivateSource(source)?{writerProvider:global.writerProvider??PARAMETERS.writerProvider.default,writerModel:global.writerModel??PARAMETERS.writerModel.default}:{})});
+const manualSettings = (global,source,parameters) => ({...valuesOf(resolveSettings(global,source,parameters)),...(isPrivateSource(source)?{writerProvider:global.writerProvider??PARAMETERS.writerProvider.default,writerModel:global.writerModel??PARAMETERS.writerModel.default}:{})});
 function validateAnalysis(a) {
   if (!a || typeof a.summary !== "string" || typeof a.reason !== "string" || !Number.isInteger(a.importance) || a.importance < 0 || a.importance > 3 || typeof a.urgent !== "boolean" || !["none", "human", "review"].includes(a.intervention) || !["confirmed", "inferred", "insufficient"].includes(a.evidence) || a.urgencyReason != null && typeof a.urgencyReason !== "string" || a.urgent && !a.urgencyReason?.trim()) throw new Error("分析结果不符合约定结构");
 }
@@ -28,8 +28,9 @@ class ConsoleService {
   #aborts = /* @__PURE__ */ new Set();
   #timer;
   #closed = false;
-  constructor({ store, connectors, executor, workspaces, imageCache, clock = Date.now }) {
+  constructor({ store, connectors, executor, workspaces, imageCache, defaultTimeoutMs = 300000, clock = Date.now }) {
     Object.assign(this, { store, connectors, executor, workspaces, imageCache, clock });
+    this.parameters = {...PARAMETERS, agentTimeoutSeconds: {...PARAMETERS.agentTimeoutSeconds, default: defaultTimeoutMs / 1000}};
   }
   assertCredentialsIdle() {
     if (this.#closed || this.#jobs.size || this.#aborts.size) throw new Error('后台任务正在执行，请结束后再修改或验证凭据');
@@ -47,7 +48,7 @@ class ConsoleService {
   }
   #sourceView(source) {
     const connection=this.connectors[source.platform]?.status?.() ?? { ready: false, reason: "连接器不可用" };
-    return { ...source, effective: resolveSettings(this.store.settings(), source), connection: isPrivateSource(source) ? {...connection,canPublish:false,reason:connection.ready?"Chrome Cookie · 私信只读采集":connection.reason} : connection };
+    return { ...source, effective: resolveSettings(this.store.settings(), source, this.parameters), connection: isPrivateSource(source) ? {...connection,canPublish:false,reason:connection.ready?"Chrome Cookie · 私信只读采集":connection.reason} : connection };
   }
   overview(query = {}) {
     const sources = this.store.overviewSources().map((source) => {
@@ -60,7 +61,7 @@ class ConsoleService {
       return { id, sources: rows.length, total: rows.reduce((n, s) => n + s.total, 0), unread: rows.reduce((n, s) => n + s.unread, 0), handling: rows.reduce((n, s) => n + s.handling, 0), analyzed: rows.reduce((n, s) => n + s.analyzed, 0), unreadUnorganized: rows.reduce((n, s) => n + s.unreadUnorganized, 0), importance: Math.max(0, ...rows.map((s) => s.importance)), urgent: rows.some((s) => s.urgent), priority: Math.max(0, ...rows.map((s) => s.priority)), changedAt: rows.map((s) => s.changedAt).sort().at(-1) ?? "", summaries: rows.flatMap((s) => s.summaries).slice(0, 2) };
     }).sort((a, b) => b.priority - a.priority || b.handling - a.handling || b.unread - a.unread || b.changedAt.localeCompare(a.changedAt));
     const sorted = sources.filter((s) => !query.platform || query.platform === "all" || s.platform === query.platform).sort((a, b) => (query.order === "updated" ? b.changedAt.localeCompare(a.changedAt) : b.priority - a.priority || b.handling - a.handling || b.unread - a.unread) || b.changedAt.localeCompare(a.changedAt) || a.id.localeCompare(b.id));
-    return { settings: this.store.settings(), parameters: PARAMETERS, busy: [...this.#jobs.keys()], sources: sorted, platforms, revision: this.store.revision() };
+    return { settings: this.store.settings(), parameters: this.parameters, busy: [...this.#jobs.keys()], sources: sorted, platforms, revision: this.store.revision() };
   }
   source(id) {
     return this.#sourceView(required(this.store.source(id), "来源"));
@@ -135,7 +136,7 @@ class ConsoleService {
     }
     const item = itemId ? required(this.store.item(itemId), "内容项") : null;
     if (item && (!sourceId || item.sourceId !== sourceId)) throw new Error("只能预览此来源的内容项");
-    const prepared = await this.#prepare(valid), inputData = { ...assembleInput(prepared, item, { language: valuesOf(resolveSettings(this.store.settings(), valid)).language, stage }), ...previewExtras(stage) };
+    const prepared = await this.#prepare(valid), inputData = { ...assembleInput(prepared, item, { language: valuesOf(resolveSettings(this.store.settings(), valid, this.parameters)).language, stage }), ...previewExtras(stage) };
     return { input: inputData, serialized: serializeInput(inputData), postHistory: postHistoryText(prepared), itemId: item?.id ?? null };
   }
   async #prepare(source, workspace, settings = this.store.settings()) {
@@ -163,7 +164,7 @@ class ConsoleService {
   }
   async startLearning({ sourceId } = {}) {
     const source = required(this.store.source(sourceId), "来源"), settings = this.store.settings(), prepared = await this.#prepare(source, void 0, settings);
-    const batch = this.store.createLearning({ id: randomUUID(), sourceId, workspaceId: source.workspaceId, sourceSnapshot: source, preparedSource: prepared, settingsSnapshot: settings, effectiveSettings: manualSettings(settings, source), baseSourceRevision: source.revision, baseSettingsHash: learningHash(settings), baseContextVersion: prepared.contextVersion, createdAt: nowISO(this.clock) });
+    const batch = this.store.createLearning({ id: randomUUID(), sourceId, workspaceId: source.workspaceId, sourceSnapshot: source, preparedSource: prepared, settingsSnapshot: settings, effectiveSettings: manualSettings(settings, source, this.parameters), baseSourceRevision: source.revision, baseSettingsHash: learningHash(settings), baseContextVersion: prepared.contextVersion, createdAt: nowISO(this.clock) });
     if (batch.status === "queued") this.#launchLearning(batch.id);
     return this.learning(batch.id);
   }
@@ -340,7 +341,7 @@ class ConsoleService {
       workspaceId: source.workspaceId,
       baseAnalysisRevision: item.analysisRevision ?? 0,
       inputSnapshot: { changedAt: item.changedAt, previous: item.previous },
-      settingsSnapshot: valuesOf(resolveSettings(this.store.settings(), source)),
+      settingsSnapshot: valuesOf(resolveSettings(this.store.settings(), source, this.parameters)),
       status: kind === "human" ? "open" : "running",
       kind,
       startedAt: nowISO(this.clock),
@@ -351,7 +352,7 @@ class ConsoleService {
     return this.store.createRun(this.#runRecord(source, item, prepared, kind));
   }
   async #organize(sourceId, { scope, trigger }) {
-    const source = required(this.store.source(sourceId), "来源"), settings = valuesOf(resolveSettings(this.store.settings(), source));
+    const source = required(this.store.source(sourceId), "来源"), settings = valuesOf(resolveSettings(this.store.settings(), source, this.parameters));
     let prepared, preparationError;
     try {
       prepared = await this.#prepare(source);
@@ -423,7 +424,7 @@ class ConsoleService {
       if (human) return { sessionId: human };
       const run = this.#newRun(source, item, prepared, "human");
       try {
-        const sessionId = await this.executor.conversation({ runId: run.id, item, source: prepared, settings: manualSettings(this.store.settings(), source) });
+        const sessionId = await this.executor.conversation({ runId: run.id, item, source: prepared, settings: manualSettings(this.store.settings(), source, this.parameters) });
         return { sessionId };
       } catch (error) {
         this.store.updateRun(run.id, { status: "failed", error: errorText(error) });
@@ -634,7 +635,7 @@ class ConsoleService {
     if (!run?.sourceSnapshot) return null;
     const item = this.#runItem(run);
     if (!item) return null;
-    const settings = run.settingsSnapshot ?? valuesOf(resolveSettings(this.store.settings(), run.sourceSnapshot));
+    const settings = run.settingsSnapshot ?? valuesOf(resolveSettings(this.store.settings(), run.sourceSnapshot, this.parameters));
     return { input: assembleInput(run.sourceSnapshot, item, { language: settings.language, stage: "generation" }) };
   }
   endSession(sessionId) {
@@ -657,7 +658,7 @@ class ConsoleService {
       const controller = new AbortController();
       this.#aborts.add(controller);
       try {
-        return await this.executor.supervise({ runId: draft.runId, draft, source: prepared, item, settings: valuesOf(resolveSettings(this.store.settings(), source)), signal: controller.signal });
+        return await this.executor.supervise({ runId: draft.runId, draft, source: prepared, item, settings: valuesOf(resolveSettings(this.store.settings(), source, this.parameters)), signal: controller.signal });
       } catch (error) {
         this.store.updateDraft(id, { error: errorText(error) });
         throw error;
@@ -732,7 +733,7 @@ class ConsoleService {
   async tick() {
     if (this.credentials?.busy()) return;
     for (const source of this.store.sources().filter((s) => s.enabled)) {
-      const settings = valuesOf(resolveSettings(this.store.settings(), source));
+      const settings = valuesOf(resolveSettings(this.store.settings(), source, this.parameters));
       if (source.retryAt && Date.parse(source.retryAt) > this.clock()) continue;
       const organize = !source.organizedAt || this.clock() - Date.parse(source.organizedAt) >= settings.organizeHours * 36e5;
       if (!source.fetchedAt || this.clock() - Date.parse(source.fetchedAt) >= settings.fetchHours * 36e5) await this.refresh(source.id, { organize, trigger: 'scheduled' });

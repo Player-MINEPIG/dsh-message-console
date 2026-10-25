@@ -34,7 +34,7 @@ export async function apply(ctx, config) {
   let service;
   const executor = createDshExecutor(ctx, { createUserMessage, SessionId, service: () => service, timeoutMs: config.timeoutMs, workspaces });
   const imageCache = await new ImageCache(join(config.storageDir, 'images'), { settings: () => store.settings() }).start();
-  service = new ConsoleService({ store, connectors, executor, workspaces, imageCache });
+  service = new ConsoleService({ store, connectors, executor, workspaces, imageCache, defaultTimeoutMs: config.timeoutMs });
   service.credentials = new PlatformCredentials({ github: new GitHubCredentials(github), bilibili: bilibiliCredentials }, { assertIdle: () => service.assertCredentialsIdle() });
   await installAgentTools(ctx, service);
   ctx.provide('messageConsole', service);

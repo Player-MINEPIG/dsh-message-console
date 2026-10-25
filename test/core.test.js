@@ -258,3 +258,18 @@ test('missing native working sessions fall back to human creation, host errors d
  f.executor.resolveConversation=async()=>null;
  assert.match((await f.service.openConversation(id)).sessionId,/^human/);
 });
+
+test('execution limit inherits backend default, global setting and source override without changing content context',async t=>{
+ const f=await setup(t);
+ const service=new ConsoleService({store:f.store,connectors:{bilibili:f.connector},executor:f.executor,workspaces:f.service.workspaces,defaultTimeoutMs:600000});
+ assert.equal(service.overview().parameters.agentTimeoutSeconds.default,600);
+ assert.equal(service.source(f.source.id).effective.agentTimeoutSeconds.value,600);
+ const context=f.service.source(f.source.id).contextVersion;
+ await service.configure({agentTimeoutSeconds:900});
+ assert.equal(service.source(f.source.id).effective.agentTimeoutSeconds.value,900);
+ const overridden=await service.saveSource({...service.source(f.source.id),settings:{agentTimeoutSeconds:1200}},f.source.id);
+ assert.equal(service.source(f.source.id).effective.agentTimeoutSeconds.value,1200);assert.equal(overridden.contextVersion,context);
+ await service.saveSource({...overridden,settings:{}},f.source.id);
+ assert.equal(service.source(f.source.id).effective.agentTimeoutSeconds.value,900);
+ for(const value of [0,1801,Infinity,'300'])await assert.rejects(service.configure({agentTimeoutSeconds:value}),/设置值无效/);
+});

@@ -7,12 +7,13 @@ export const time = value => value ? new Date(value).toLocaleString('zh-CN', { m
 export const safeURL = value => { try { const url = new URL(value); return ['https:','http:'].includes(url.protocol) ? url.href : undefined; } catch { return undefined; } };
 export { request } from './api.js';
 
-const settingNames = { imageCacheMaxMB: '图片缓存总上限（MiB）', imageOriginalDays: '原图未使用保留天数', imageThumbnailDays: '缩略图未使用保留天数', imageCacheReserveMB: '磁盘预留空间（MiB）', fetchHours: '抓取间隔（小时）', organizeHours: '整理间隔（小时）', language: '摘要语言', decisionProfile: 'Jev 决策 profile', decisionConfidence: '决策概率阈值', decisionMargin: '决策概率差阈值', writerProvider: '生成 / 分析提供商', writerModel: '生成 / 分析模型', supervisorProvider: '监督提供商', supervisorModel: '监督模型', replyStyle: '回复风格', reviewFocus: 'PR 审查重点', learningGuidance: '默认学习指导' };
+const settingNames = { agentTimeoutSeconds: '单轮执行时限（秒）', imageCacheMaxMB: '图片缓存总上限（MiB）', imageOriginalDays: '原图未使用保留天数', imageThumbnailDays: '缩略图未使用保留天数', imageCacheReserveMB: '磁盘预留空间（MiB）', fetchHours: '抓取间隔（小时）', organizeHours: '整理间隔（小时）', language: '摘要语言', decisionProfile: 'Jev 决策 profile', decisionConfidence: '决策概率阈值', decisionMargin: '决策概率差阈值', writerProvider: '生成 / 分析提供商', writerModel: '生成 / 分析模型', supervisorProvider: '监督提供商', supervisorModel: '监督模型', replyStyle: '回复风格', reviewFocus: 'PR 审查重点', learningGuidance: '默认学习指导' };
 const settingGroups = [
+  { title: '自动执行时限', keys: ['agentTimeoutSeconds'], hint: '可设置 1–1800 秒；未配置时沿用后端执行时限（初始为 300 秒）。每轮决策升级、生成分析、监督或评价学习分别计时，包含工具执行和上下文压缩；不限制整批整理、Jev 请求、人工继续会话或远端任务回报等待。保存后用于新发起的工作，在途计时不变。' },
   { title: '图片缓存容量与保留期限', keys: ['imageCacheMaxMB','imageOriginalDays','imageThumbnailDays','imageCacheReserveMB'], hint: '网页图片缓存共享预算，临时下载也计入上限；决策升级图片只在内存转发，不生成会话附件。低于磁盘预留空间时停止新增缓存；图片链接随评论历史保留。' },
   { title: '抓取与整理频率', keys: ['fetchHours','organizeHours'], hint: '自动整理只处理新变化和需要更新的既有分析。手动整理已有数据也包含尚未分析的历史基线。' },
   { title: 'Jev · 轻量决策', keys: ['decisionProfile','decisionConfidence','decisionMargin'], hint: '评论先由 Jev 输出无需回复、可自动回复、人工介入的选项概率，独立判断重要程度。私信仅评定重要程度，低置信也不升级或拟稿。普通模型的概率为自报估计，未经校准，阈值需用实际样本验证。选择默认项时使用 Jev 的默认 profile。此路线独立于生成模型。' },
-  { title: '生成 / 分析模型', keys: ['writerProvider','writerModel'], hint: '用于低置信决策的一次升级、评论拟稿、PR 审查、issue 核实和 release 摘要。摘要与正文来自同一次生成 / 分析输出，没有独立总结调用。' },
+  { title: '生成 / 分析模型', keys: ['writerProvider','writerModel'], hint: '用于低置信决策的一次升级、评论拟稿、PR 审查、issue 核实和 release 摘要。摘要与正文来自同一次生成 / 分析输出，没有独立总结调用。旧会话或来源模型不可用时，回退到当前全局默认；默认也不可用则报错。' },
   { title: '独立监督模型', keys: ['supervisorProvider','supervisorModel'], hint: '有拟发布正文后才检查草稿。未单独填写的字段继承生成 / 分析模型，但仍创建独立会话。已授权的B站评论可在监督通过后由插件自动发送，其他草稿等待你审核。' },
   { title: '评价学习指导', keys: ['learningGuidance'], hint: '作为四个模型阶段的共同指导。整理评价生成提案后，只有人工确认应用才会修改这里。也可手动编辑。' },
   { title: '内容偏好', keys: ['language','replyStyle','reviewFocus'], hint: '按来源平台和内容能力生效。' },

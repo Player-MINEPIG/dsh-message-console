@@ -2,6 +2,7 @@ import { applies } from './content-capabilities.js';
 import { validateInputOrder } from './input-assembly.js';
 import { normalizeTarget, validateMaterials, validateStageContexts } from './source-context.js';
 export const PARAMETERS = {
+  agentTimeoutSeconds: { scope: 'common', default: 300, type: 'number', min: 1, max: 1800 },
   imageCacheMaxMB: { scope: 'cache', default: 256, type: 'number', min: 1, max: 4096 },
   imageOriginalDays: { scope: 'cache', default: 7, type: 'number', min: 1, max: 365 },
   imageThumbnailDays: { scope: 'cache', default: 30, type: 'number', min: 1, max: 365 },
@@ -34,8 +35,8 @@ export function validateSettings(input) {
   return structuredClone(settings);
 }
 export { applies };
-export function resolveSettings(global, source) {
-  return Object.fromEntries(Object.entries(PARAMETERS).filter(([, spec]) => applies(spec, source)).map(([key, spec]) => {
+export function resolveSettings(global, source, parameters = PARAMETERS) {
+  return Object.fromEntries(Object.entries(parameters).filter(([, spec]) => applies(spec, source)).map(([key, spec]) => {
     const overridden = Object.hasOwn(source.settings, key);
     return [key, { value: overridden ? source.settings[key] : global[key] ?? spec.default, inherited: !overridden, origin: overridden ? 'source' : Object.hasOwn(global, key) ? 'global' : 'default' }];
   }));
