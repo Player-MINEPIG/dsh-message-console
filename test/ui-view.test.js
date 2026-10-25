@@ -181,3 +181,19 @@ test('credentials renderer accepts backend platform fields/actions and never fil
  const html=render(CredentialCard,{platform:{id:'future',title:'新平台',description:'后端说明',status:{ready:true,identity:{name:'用户'}},fields:[{id:'token',label:'访问凭据',type:'secret',required:true}],actions:[{id:'save',label:'验证并保存',fields:true}]},onUpdated:()=>{}});
  assert.match(html,/新平台/);assert.match(html,/type="password"/);assert.match(html,/value=""/);assert.match(html,/验证并保存/);assert.match(html,/用户/);
 });
+
+
+test('source organization locks only its source and explains disabled buttons on hover',()=>{
+  const source={id:'a',name:'来源 A',platform:'github',connection:{ready:true}};
+  const props={source,state:{busy:['source:b']},action(){},onOrganize(){}};
+  const buttons=html=>[...html.matchAll(/<button([^>]*)>(刷新并整理(?:中…)?|整理已有数据|正在整理已有数据…)<\/button>/g)];
+  const idle=buttons(render(SourcePage,props));
+  assert.equal(idle.length,2);
+  for(const [,attributes] of idle)assert.doesNotMatch(attributes,/disabled/);
+  for(const extra of [{state:{busy:['source:a']}},{operation:'refresh'},{operation:'organize'}]){
+    const html=render(SourcePage,{...props,...extra}),locked=buttons(html);
+    assert.equal(locked.length,2);
+    for(const [,attributes] of locked){assert.match(attributes,/disabled/);assert.match(attributes,/title="当前来源已有刷新或整理正在运行，请完成后再试。"/);}
+    assert.match(html,/<div class="dmc-section-actions" title="当前来源已有刷新或整理正在运行，请完成后再试。">/);
+  }
+});
