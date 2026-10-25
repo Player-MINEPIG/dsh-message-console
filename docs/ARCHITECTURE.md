@@ -321,3 +321,9 @@ B站根评论作者以 `rootAuthorId` 身份元数据保存在内容项当前状
 内容入口优先选择同内容、来源及当前工作区的 `writer/review/investigate` 会话，按最后关联的工作轮从新到旧查找。内容或来源背景更新不会让原工作会话丢失入口，也不重绑其 run、角色或版本。监督、决策升级和学习会话仍从各自工作记录进入。
 
 跳转前核对绑定与宿主 live/cold 会话的 canonical cwd。确实缺失的身份跳过；持久化读取失败或宿主工作区与绑定不符时明确报错，不静默新建。打开原会话不恢复执行、不注入新消息、不触发模型，也不新建业务 run。没有有效工作会话时，仍按当前内容版本和背景版本复用人工会话；否则创建具有完整背景的人工会话。其他历史入口保留。
+
+## 平台凭据 adapter
+
+`src/credentials/index.js` 注册平台 adapter，`describe()` 返回字段、可用动作与已脱敏状态，`act(action, values)` 执行验证/保存/登录，`busy()` 表示设备授权仍在运行，`close()` 释放子进程。`GET /credentials` 与 `POST /credentials/:platform/:action` 位于既有宿主认证 HTTP 边界，能力白名单在调用前校验。前端 `CredentialsPanel` 只按声明渲染字段和动作，秘密字段始终为空密码输入；设备授权只显示固定平台地址、验证码和状态。
+
+B站 adapter 复用 CookieTransport 与身份检查，临时0600文件验证成功后 rename 激活新连接器，原外部 cookieFile 不修改。已有私信 accountId 必须保持。GitHub adapter 用无 shell、固定参数的 gh 子进程执行设备流，丢弃原始输出，仅解析一次性验证码；不启动服务器浏览器，不向前端传令牌。全局凭据互斥与 ConsoleService 任务门禁防止轮次中切换身份，宿主卸载等待保存结束并终止登录进程。

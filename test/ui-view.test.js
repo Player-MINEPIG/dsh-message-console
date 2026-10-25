@@ -6,8 +6,8 @@ import { build } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 const directory=await mkdtemp(join(process.cwd(),'.local/ui-test-'));
-await build({stdin:{contents:"export {ImageGallery,ImageCachePanel} from './src/images-view.jsx'; export {WorkRecord} from './src/work-records.jsx'; export {Dashboard,SourcePage,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination,SettingFields} from './src/ui-shared.jsx'; export {SourceEditor} from './src/source-editor.jsx'; export {ConsoleApp,VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
-const {SourceEditor,ImageGallery,ImageCachePanel,WorkRecord,Dashboard,SourcePage,ItemCard,ReadAllControl,ListPagination,SettingFields,ConsoleApp,VideoContext,FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory}=await import(join(directory,'ui.mjs'));
+await build({stdin:{contents:"export {ImageGallery,ImageCachePanel} from './src/images-view.jsx'; export {WorkRecord} from './src/work-records.jsx'; export {Dashboard,SourcePage,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination,SettingFields} from './src/ui-shared.jsx'; export {SourceEditor} from './src/source-editor.jsx'; export {CredentialCard} from './src/credentials-view.jsx'; export {ConsoleApp,VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
+const {SourceEditor,ImageGallery,ImageCachePanel,WorkRecord,Dashboard,SourcePage,ItemCard,ReadAllControl,ListPagination,SettingFields,ConsoleApp,VideoContext,CredentialCard,FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory}=await import(join(directory,'ui.mjs'));
 test.after(()=>rm(directory,{recursive:true,force:true}));
 const render=(Component,props)=>renderToStaticMarkup(React.createElement(Component,props));
 test('overview renders server summaries without any item or draft collection',()=>{
@@ -175,4 +175,9 @@ test('private source editor exposes only importance stage and settings, without 
 test('private work record describes importance and has no comment workflow explanation',()=>{
   const html=render(WorkRecord,{run:{id:'r',status:'completed',kind:'automatic',processing:'decision-only',hasDecision:true,sessions:[]},item:{kind:'private-message'},openSession(){}});
   assert.match(html,/仅评定消息重要程度/);assert.match(html,/Jev 重要程度/);assert.doesNotMatch(html,/Jev 与升级判断|决策分流后结束/);
+});
+
+test('credentials renderer accepts backend platform fields/actions and never fills stored secrets',()=>{
+ const html=render(CredentialCard,{platform:{id:'future',title:'新平台',description:'后端说明',status:{ready:true,identity:{name:'用户'}},fields:[{id:'token',label:'访问凭据',type:'secret',required:true}],actions:[{id:'save',label:'验证并保存',fields:true}]},onUpdated:()=>{}});
+ assert.match(html,/新平台/);assert.match(html,/type="password"/);assert.match(html,/value=""/);assert.match(html,/验证并保存/);assert.match(html,/用户/);
 });

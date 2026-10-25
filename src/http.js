@@ -23,7 +23,8 @@ function createHandler(service, admission) {
       const path = url.pathname.slice(ROOT.length).split("/").filter(Boolean).map(decodeURIComponent), key = path.join("/"), query = Object.fromEntries(url.searchParams);
       if (req.method === "GET") {
         let result2;
-        if (key === "image-cache") result2 = await service.imageCacheStatus();
+        if (key === "credentials") result2 = service.credentials?.list() ?? { platforms: [] };
+        else if (key === "image-cache") result2 = await service.imageCacheStatus();
         else if (key === "learning") result2 = service.learningList(query);
         else if (path[0] === "learning" && path.length === 2) result2 = service.learning(path[1]);
         else if (key === "overview") result2 = service.overview(query);
@@ -56,7 +57,8 @@ function createHandler(service, admission) {
       if (req.headers["x-dsh-message-console"] !== "1" || !req.headers["content-type"]?.startsWith("application/json")) return send(403, { error: "请求来源校验失败" });
       const body = await jsonBody(req);
       let result = { ok: true };
-      if (key === "image-cache/clear") result = await service.clearImageCache();
+      if (path[0] === "credentials" && path.length === 3) result = await service.credentials.act(path[1], path[2], body);
+      else if (key === "image-cache/clear") result = await service.clearImageCache();
       else if (key === "read-all") result = service.markAllRead(body);
       else if (key === "handle-all") result = service.markAllHandled(body);
       else if (key === "learning") result = await service.startLearning(body);

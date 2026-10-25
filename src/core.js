@@ -31,6 +31,9 @@ class ConsoleService {
   constructor({ store, connectors, executor, workspaces, imageCache, clock = Date.now }) {
     Object.assign(this, { store, connectors, executor, workspaces, imageCache, clock });
   }
+  assertCredentialsIdle() {
+    if (this.#closed || this.#jobs.size || this.#aborts.size) throw new Error('后台任务正在执行，请结束后再修改或验证凭据');
+  }
   image(id, query) {
     return required(this.imageCache, '图片缓存').get(this.store.image(id, query), query.variant ?? 'thumbnail');
   }
@@ -286,6 +289,7 @@ class ConsoleService {
   }
   #job(key, work, { busyMessage } = {}) {
     if (this.#closed) return Promise.reject(new Error("插件已停止"));
+    if (this.credentials?.busy()) return Promise.reject(new Error('凭据操作正在进行，请完成后重试'));
     if (this.#jobs.has(key)) return busyMessage ? Promise.reject(new Error(busyMessage)) : this.#jobs.get(key);
     const promise = Promise.resolve().then(work).finally(() => this.#jobs.delete(key));
     this.#jobs.set(key, promise);
@@ -726,6 +730,7 @@ class ConsoleService {
     this.#timer.unref?.();
   }
   async tick() {
+    if (this.credentials?.busy()) return;
     for (const source of this.store.sources().filter((s) => s.enabled)) {
       const settings = valuesOf(resolveSettings(this.store.settings(), source));
       if (source.retryAt && Date.parse(source.retryAt) > this.clock()) continue;
@@ -739,6 +744,7 @@ class ConsoleService {
     clearInterval(this.#timer);
     for (const controller of this.#aborts) controller.abort({kind:'owner-disposed'});
     await Promise.allSettled(this.#jobs.values());
+    await this.credentials?.close();
     await this.imageCache?.close();
     await this.store.close();
   }
