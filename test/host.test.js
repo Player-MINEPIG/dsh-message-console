@@ -17,6 +17,7 @@ test('stock host scopes actual tools, workspace permissions, AGENTS and durable 
   const escapedRoot = await mkdtemp(join(resolve('.local'), 'host-escape-'));
   const bindings = new Map(), receipts = new Map(), writes = [], requests = [], counts = new Map(), ids = [];
   const service = {
+    store: { settings: () => ({writerProvider:'offline',writerModel:'transport-failure'}) },
     storageDirectory:()=>resolve('.local'),
     bindSession(binding) { bindings.set(binding.sessionId, binding); },
     sessionBinding(id, cwd) { const b = bindings.get(id); if (b && cwd !== b.cwd) throw new Error('cwd mismatch'); return b; },

@@ -197,3 +197,8 @@ test('source organization locks only its source and explains disabled buttons on
     assert.match(html,/<div class="dmc-section-actions" title="当前来源已有刷新或整理正在运行，请完成后再试。">/);
   }
 });
+
+test('settings explain the per-turn limit and render editable bounds with inherited value',()=>{
+ const html=render(SettingFields,{parameters:{agentTimeoutSeconds:{scope:'common',type:'number',default:600,min:1,max:1800}},values:{},onChange(){}});
+ assert.match(html,/单轮执行时限（秒）/);assert.match(html,/远端任务回报等待/);assert.match(html,/min="1"/);assert.match(html,/max="1800"/);assert.match(html,/placeholder="600"/);
+});
