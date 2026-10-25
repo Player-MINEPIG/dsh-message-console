@@ -327,3 +327,5 @@ B站根评论作者以 `rootAuthorId` 身份元数据保存在内容项当前状
 `src/credentials/index.js` 注册平台 adapter，`describe()` 返回字段、可用动作与已脱敏状态，`act(action, values)` 执行验证/保存/登录，`busy()` 表示设备授权仍在运行，`close()` 释放子进程。`GET /credentials` 与 `POST /credentials/:platform/:action` 位于既有宿主认证 HTTP 边界，能力白名单在调用前校验。前端 `CredentialsPanel` 只按声明渲染字段和动作，秘密字段始终为空密码输入；设备授权只显示固定平台地址、验证码和状态。
 
 B站 adapter 复用 CookieTransport 与身份检查，临时0600文件验证成功后 rename 激活新连接器，原外部 cookieFile 不修改。已有私信 accountId 必须保持。GitHub adapter 用无 shell、固定参数的 gh 子进程执行设备流，丢弃原始输出，仅解析一次性验证码；不启动服务器浏览器，不向前端传令牌。全局凭据互斥与 ConsoleService 任务门禁防止轮次中切换身份，宿主卸载等待保存结束并终止登录进程。
+
+来源的手动刷新与整理在前端按来源 ID 保留在途状态，切换页面不会丢失，同一来源防止重复提交，其他来源可独立操作。后端继续以来源为单位互斥；禁用按钮的悬停提示说明当前来源已有刷新或整理运行。
