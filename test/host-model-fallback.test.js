@@ -19,7 +19,7 @@ test('real DSH warm and cold reports recover removed providers and retired model
    async resolveModel(provider,id){if(retired&&id==='retired')throw new llm.LlmError('retired model','MODEL_NOT_FOUND');return {provider,id,name:id};}
    async *stream(request){
     requests.push({provider:request.provider,model:request.model});
-    if(request.model==='broken'||defaultBroken){yield {type:'finish',reason:{kind:'error',failure:{code:'HTTP_ERROR',message:'upstream unavailable'}}};return;}
+    if(request.model==='broken'||defaultBroken){yield {type:'finish',reason:{kind:'error',failure:{code:'HTTP_ERROR',message:'upstream unavailable',status:503}}};return;}
     const followup=request.messages.some(m=>m.role==='user'&&JSON.stringify(m.content).includes('REPORT'));
     if(followup){yield {type:'block-start',index:0,blockType:'text'};yield {type:'block-end',index:0,block:{type:'text',text:'保留既有历史并处理回报'}};yield {type:'finish',reason:{kind:'stop'}};return;}
     const analysis={summary:'合成',importance:0,urgent:false,reason:'合成验证',intervention:'none',evidence:'confirmed'};
@@ -47,7 +47,7 @@ test('real DSH warm and cold reports recover removed providers and retired model
   override={provider:'current-provider',model:'broken'};
   const before=requests.length;assert.equal((await report()).kind,'completed');assert.deepEqual(requests.slice(before).map(r=>r.model),['broken','v2']);
   defaultBroken=true;
-  const start=requests.length,reason=await report();assert.notEqual(reason.kind,'completed');assert.match(JSON.stringify(reason),/全局默认模型不可用/);assert.deepEqual(requests.slice(start).map(r=>r.model),['broken','v2']);
+  const start=requests.length,reason=await report();assert.notEqual(reason.kind,'completed');assert.match(JSON.stringify(reason),/全局默认模型不可用/);assert.equal(reason.error.code,'HTTP_ERROR');assert.equal(reason.error.status,503);assert.deepEqual(requests.slice(start).map(r=>r.model),['broken','v2']);
   stop();
   assert.equal(agent.session.snapshotEvents().filter(e=>e.type==='tool/ptc-dispatch'&&e.data.name==='dmc_submit_result').length,1,'model retry never repeats prior tools');
   const headers=agent.session.snapshotEvents().filter(e=>e.type==='request/header').map(e=>e.data.header.config.model);
