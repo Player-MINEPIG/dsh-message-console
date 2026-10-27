@@ -30,9 +30,9 @@ for(const kind of ['private-message','comment']) test(`real DSH/PTC persists ove
     ctx.llm.registerAdapter(['offline-initial'],new Offline());
     ctx.provide('decisionModels',{config:()=>({maxStateChars:40000}),ask:async()=>{jevCalls++;throw new Error('must bypass Jev');}});
     owner=await f.executorOwner(()=>service);
-    service=new ConsoleService({store,executor:owner.executor,workspaces:{resolve:id=>ctx.workspaceRegistry.get(id)},connectors:{bilibili:{identity:async()=>({id:'10'}),status:()=>({ready:true}),fetch:async()=>({complete:true,items:[{remoteId:'synthetic',kind,title:'合成输入',body:'原文',payload:{comments:[{id:'1',body:'合成消息'}]}}]})}}});
+    service=new ConsoleService({store,executor:owner.executor,workspaces:{resolve:id=>ctx.workspaceRegistry.get(id)},connectors:{bilibili:{identity:async()=>({id:'10'}),status:()=>({ready:true}),fetch:async()=>({complete:true,items:[{remoteId:'synthetic',kind,title:'合成输入',body:'原文',payload:{comments:Array.from({length:20},(_,index)=>({id:String(index+1),body:'合成消息'+'x'.repeat(1990)}))}}]})}}});
     await installAgentTools(ctx,service);await service.configure({writerProvider:'offline-initial',writerModel:'ordinary'});
-    const source=await service.saveSource({workspaceId:registeredWorkspace.id,name:'合成超限',platform:'bilibili',target:kind==='private-message'?'private-messages':'BV1111111111',types:[kind],context:'x'.repeat(39000),stageContexts:{decision:{context:'DECISION_ONLY'+'x'.repeat(2000)},escalation:{context:'ESCALATION_ONLY'}}});
+    const source=await service.saveSource({workspaceId:registeredWorkspace.id,name:'合成超限',platform:'bilibili',target:kind==='private-message'?'private-messages':'BV1111111111',types:[kind],context:'x'.repeat(19000),stageContexts:{decision:{context:'DECISION_ONLY'+'x'.repeat(2000)},escalation:{context:'ESCALATION_ONLY'}}});
     await service.refresh(source.id,{organize:false});const report=await service.organize(source.id,{scope:'history'});
     assert.equal(report.failed,0,JSON.stringify(report));assert.equal(report.completed,1);assert.equal(jevCalls,0);assert.equal(calls,2);
     const item=service.items(source.id).items[0],run=store.run(service.runs(item.id).items[0].id);
