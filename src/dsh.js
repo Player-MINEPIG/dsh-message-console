@@ -266,6 +266,7 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
     return sessionId;
   }
   return new WorkflowExecutor({
+    decisionConfig: () => ctx.decisionModels?.config?.() ?? {},
     prepareImages: request => escalationImages(ctx, domain(), request),
     decision: (request, options) => { if (!ctx.decisionModels?.ask) throw new Error('Jev decisionModels 服务不可用'); return ctx.decisionModels.ask(request, options); },
     runAgent, conversation, resolveConversation,

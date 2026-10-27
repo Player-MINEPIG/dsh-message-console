@@ -47,7 +47,7 @@ test('Jev ignore and human decisions do not require a generation route; upgrade 
   const result=await executor.analyze({...base,settings:{...base.settings,writerProvider:'',writerModel:''}});assert.equal(calls,0);assert.equal(result.processing,'decision-only');
  }
  const executor=new WorkflowExecutor({decision:async()=>decision({ignore:.4,draft:.5,human:.1}),runAgent:async()=>{throw new Error('must not call');}});
- await assert.rejects(executor.analyze({...base,settings:{...base.settings,writerProvider:'',writerModel:''}}),/低置信决策升级需要模型路由/);
+ await assert.rejects(executor.analyze({...base,settings:{...base.settings,writerProvider:'',writerModel:''}}),/普通模型初步判断需要模型路由/);
 });
 
 test('GitHub closed items reach analysis with login and actor evidence and instructions for self versus external changes',async()=>{

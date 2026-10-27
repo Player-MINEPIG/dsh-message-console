@@ -307,7 +307,7 @@ B站私信来源固定 `target: 'private-messages'`、`types: ['private-message'
 
 消息存为已有按版本分页的 `comments` 行，额外投影作者ID、方向、类型和发送时间。非文字消息保留平台原始字段，可通过 `content(section: 'comment')` 分块读取。撤回消息只保留撤回占位，不保存平台返回的旧正文。轻量头投影联系人和采集范围，历史版本可分页阅读全部已采集消息。Cookie只向新增精确主机 `api.vc.bilibili.com` 转发，不调用发送或已读接口。
 
-`WorkflowExecutor` 对私信只问Jev `importance` 四选项，校验完整归一化概率，保留真实输入输出。`contentInput` 仅输入最近100条，正文总计最多24000字符、单条2000字符，剔除完整payload/rawContent及重复body，显式记录范围和截断。图片、卡片等仅含文字及占位，不走图片模型链。固定摘要和概率理由不声称生成过内容摘要；低置信仅标注不足，不升级、不推断紧急性，`urgent:false/intervention:none`。
+`WorkflowExecutor` 对私信只问Jev `importance` 四选项，校验完整归一化概率，保留真实输入输出。`contentInput` 仅输入最近100条，正文总计最多24000字符、单条2000字符，剔除完整payload/rawContent及重复body，显式记录范围和截断。图片、卡片等仅含文字及占位，不走图片模型链。固定摘要和概率理由不声称生成过内容摘要；低置信仅标注不足，不升级、不推断紧急性，`urgent:false/intervention:none`。最终序列化 `state` 超过 Jev 生效字符上限时例外：跳过 Jev，使用生成/分析模型的真实 `decision-escalation` 会话，仅提交 importance/certain/reason。该路径沿用 decision 阶段上下文与资料，按需查询也保持同阶段；工作记录保存 bypass 原因、字符数、上限及普通模型结果，不伪造概率。评论超限也直接进入此普通模型判断，保留后续拟稿与独立监督约束。
 
 `canDraft(kind)` 统一限制受管提交、普通工作区、Store最终存稿、监督及发布。私信人工会话保留真实历史和读取工具，不安装存稿工具。人工阅读与评价学习显式复用全局生成模型路由，不增加自动整理阶段。私信来源不展示自动回复授权、拟稿、监督设置或草稿入口。
 

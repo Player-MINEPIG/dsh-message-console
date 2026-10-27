@@ -43,7 +43,7 @@ export function ModelWorkflowInfo() {
   return <details className="dmc-model-info"><summary>模型调用与上下文如何分工</summary><p>DSH 的 API 配置负责连接模型服务。本插件还需在全局配置或来源覆盖中从下拉列表选择提供商和模型，才知道生成 / 分析时选择哪条宿主路由。</p><ol><li>评论先调用 Jev 轻量决策，返回各选项概率。忽略或人工介入时，界面显示固定的分流提示，不生成内容摘要或回复。</li><li>决策概率不足或评论含图片时，使用生成 / 分析模型升级判断一次。升级阶段附带根评论及楼中楼图片，仍不确定则交给用户。</li><li>需要拟稿时生成评论回复。PR、issue、release 分别执行审查、核实、摘要任务。内容摘要与正文是该次生成 / 分析的输出，没有单独总结调用。</li><li>有拟发布正文后，独立监督会话检查草稿。上下文不完整时直接交给用户；图片下载失败或升级模型不支持看图时，明确转人工处理。</li></ol><p>各阶段使用共用背景和仅属于当前阶段的专属上下文与资料，保留来源信息与原始内容及讨论。角色任务指令各不相同；决策升级附加 decision，监督附加 draft。共用原文与讨论完整保留，Jev 不带入其他阶段的专属背景。Jev 以 state 接收数据、问题 instructions 接收可信规则；Agent 使用真实 DSH 会话，人工会话保留完整历史。</p></details>;
 }
 export function roleLabel(role,itemKind) {
-  return ({'decision-escalation':'低置信决策升级',writer:itemKind==='release'?'Release 摘要':'评论拟稿 / 生成分析',review:'PR 审查',investigate:'Issue 核实',supervisor:'独立监督',human:'人工处理',learning:'评价学习'})[role]??role;
+  return ({'decision-escalation':'普通模型初步判断',writer:itemKind==='release'?'Release 摘要':'评论拟稿 / 生成分析',review:'PR 审查',investigate:'Issue 核实',supervisor:'独立监督',human:'人工处理',learning:'评价学习'})[role]??role;
 }
 export function MoveButtons({index,length,onMove,label}) {
   return <span className="dmc-move"><button type="button" aria-label={`${label}上移`} disabled={index===0} onClick={()=>onMove(index,-1)}>↑</button><button type="button" aria-label={`${label}下移`} disabled={index===length-1} onClick={()=>onMove(index,1)}>↓</button></span>;

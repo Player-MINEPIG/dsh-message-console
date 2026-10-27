@@ -75,7 +75,9 @@ export async function installAgentTools(ctx, service) {
     if (!binding && await service.sessionBinding(sessionId)) throw new Error('受管会话工作区与业务绑定不匹配');
     if (binding) await assertStorageOutsideWorkspace(service.storageDirectory(), agent.session.header.cwd);
     const role = binding?.role ?? 'workspace';
-    const parameters = submitSchemas[role];
+    const parameters = role === 'decision-escalation' && service.item(binding.itemId).kind === 'private-message'
+      ? object({kind:{type:'string',enum:['decision']},operationKey:string,importance:{type:'integer',enum:[0,1,2,3]},certain:boolean,reason:string})
+      : submitSchemas[role];
     if (role !== 'learning' && !parameters) throw new Error('工作会话角色不受支持');
     if (role === 'human') {
       const background = service.sessionBackground(sessionId);

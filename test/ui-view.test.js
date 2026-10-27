@@ -174,7 +174,7 @@ test('private source editor exposes only importance stage and settings, without 
 });
 test('private work record describes importance and has no comment workflow explanation',()=>{
   const html=render(WorkRecord,{run:{id:'r',status:'completed',kind:'automatic',processing:'decision-only',hasDecision:true,sessions:[]},item:{kind:'private-message'},openSession(){}});
-  assert.match(html,/仅评定消息重要程度/);assert.match(html,/Jev 重要程度/);assert.doesNotMatch(html,/Jev 与升级判断|决策分流后结束/);
+  assert.match(html,/仅评定消息重要程度/);assert.match(html,/重要程度判断/);assert.doesNotMatch(html,/Jev 与升级判断|决策分流后结束/);
 });
 
 test('credentials renderer accepts backend platform fields/actions and never fills stored secrets',()=>{
