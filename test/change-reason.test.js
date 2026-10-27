@@ -66,6 +66,8 @@ test('multiple fetches compare against last organized version, retries keep caus
   f.entry.payload.comments[0].body = '已修改'; f.entry.payload.comments.push(reply('first')); await f.fetch();
   f.entry.payload.comments.push(...Array.from({ length: 15 }, (_, i) => reply(`next-${i}`, '长回复'.repeat(1000)))); await f.fetch();
   f.fail(true); await f.organize(); f.fail(false); await f.organize();
+  assert.equal(f.runs()[0].status, 'failed', 'scheduled runs leave failed items paused');
+  await f.service.organizeItem(f.id, { version: f.card().version });
   const latest = f.runs()[0], reason = latest.triggerReason;
   assert.equal(reason.baseVersion, oldVersion); assert.equal(reason.comments.added, 16); assert.equal(reason.comments.edited, 1); assert.equal(reason.retry, true);
   assert.equal(reason.comments.samples.length, 3); assert.ok(reason.comments.samples.every(x => Array.from(x.excerpt).length <= 600));
