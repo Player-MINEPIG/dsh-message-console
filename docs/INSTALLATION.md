@@ -6,41 +6,18 @@
 
 使用 DSH `0.2.1` 系列，含预发布和正式版；本插件的 Host、LLM 与 Session 兼容范围为 `>=0.2.1-0 <0.2.2-0`，不固定某个 RC，也不放行 `0.2.2` 及其预发布。CI 与 Linux 部署已验证 `0.2.1-rc.2`；其他版本仍需满足共享插件自身的兼容要求，例如 Assembler 1.1.3 要求至少 `0.2.1-rc.2`。声明准入范围不代表已经实测每个 RC。
 
-在同一个 DSH profile 中依次安装并启用 **Prompt Assembler → Jev → 看点什么**。已有依赖时复用该实例；升级前核对其他消费者的兼容范围，并等待在途工作结束。
+基础安装步骤统一放在 README：
 
-| 插件 | 版本与安装来源 |
-| --- | --- |
-| Prompt Assembler | [1.1.3 Release](https://github.com/Player-MINEPIG/dsh-prompt-assembler/releases/tag/v1.1.3)，兼容范围 `~1.1.3` |
-| Jev fork | 0.3.6，[固定提交 `2ec0510`](https://github.com/Player-MINEPIG/dsh-jev-plugin/commit/2ec0510ffcdabe790df8c93b0b40aee07b93c342)，兼容范围 `~0.3.6` |
-| 看点什么 | 1.0.0，使用本次验收的发布包 |
+- [依赖版本、仓库与下载链接](../README.md#quick-start)
+- [GUI 安装（官方桌面端与 Web）](../README.md#gui-安装官方桌面端与-web)
+- [CLI 下载与安装命令](../README.md#cli-安装macos--linux)
+- [首次使用](../README.md#首次使用)
 
-先下载 [Assembler 1.1.3 安装包](https://github.com/Player-MINEPIG/dsh-prompt-assembler/releases/download/v1.1.3/dsh-prompt-assembler-1.1.3.tgz)、[Jev 0.3.6 固定源码包](https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/2ec0510ffcdabe790df8c93b0b40aee07b93c342)和[看点什么发布包](https://github.com/Player-MINEPIG/dsh-message-console/releases)。将 Jev 下载文件命名为 `dsh-jev-plugin-0.3.6.tgz`。
+升级前核对其他消费者的兼容范围，并等待在途工作结束。以下为安装问题、共享服务和进阶配置。
 
-### GUI 安装（官方桌面端与 Web）
+### 安装问题与上游说明
 
-1. 从 [DSH 官网](https://www.deepseek.com/harness/)安装官方桌面端并打开。桌面端自带运行环境，安装插件无需另装 Node.js 或 pnpm。已有 Web Host 也可使用下面的插件页面。
-2. 在左侧选择 **插件 → 添加插件**。在输入框填入 Assembler 安装包的**完整绝对路径**，例如 macOS 的 `/Users/你的用户名/Downloads/dsh-prompt-assembler-1.1.3.tgz` 或 Windows 的 `C:\Users\你的用户名\Downloads\dsh-prompt-assembler-1.1.3.tgz`，点击 **安装**。
-3. 安装完成后点击 **立即启用**。按同样操作依次安装、启用 Jev 和看点什么，每次只填一个包路径；已有且版本兼容的依赖无需重装。
-4. 如界面提示需要重启，先等待在途工作结束，再重启 Host；桌面端需完全退出后重新打开。在 **插件 → 已安装插件** 中确认三个插件已启用且无加载错误。
-5. 从左侧 **看点什么 → 全局配置** 选择模型并配置平台凭据，然后添加来源。
-
-输入框填写安装来源本身，不粘贴整条 `dsh plugin ...` 命令。也支持安装包直链，但 Release 网页地址不是安装包。这里优先使用已下载的本地包，避免下述远程 URL 连续安装问题。远程 Web 中的路径属于 **Host 所在机器**，需要先把包传到服务器；桌面端使用当前电脑的路径。桌面端与 Web 的插件配置分别属于各自 profile，在 Web 安装过不等于桌面端也已安装。
-
-入口与操作依据：[官方插件管理器](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-plugin-manager/README.zh.md)、[官方桌面端](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/desktop/README.zh.md)。
-
-### CLI 安装
-
-CLI Host 需要 Node.js `^22.19.0 || >=24`。停止目标 Host 后安装，完成后再启动。管理桌面端时，先打开一次桌面端以初始化 profile，再完全退出；使用桌面端提供的 `dsh` 命令，并把下面的 `web` 改为 `desktop`。
-
-将 `web` 替换为实际 profile 名称，文件路径替换为下载位置，按顺序执行：
-
-```sh
-dsh plugin --profile web add /path/to/dsh-prompt-assembler-1.1.3.tgz
-dsh plugin --profile web add /path/to/dsh-jev-plugin-0.3.6.tgz
-dsh plugin --profile web add /path/to/dsh-message-console-1.0.0.tgz
-```
-
-本流程使用本地包逐个安装。DSH `0.2.1-rc.2` 连续使用远程压缩包 URL 安装时，可能在后续步骤遇到 `ERR_PNPM_MISSING_TARBALL_INTEGRITY`；先下载再安装可避免此路径。不要跳过完整性校验。Assembler 的界面操作与共享服务迁移见[上游安装说明](https://github.com/Player-MINEPIG/dsh-prompt-assembler/blob/v1.1.3/docs/INSTALLATION.md)。
+README 使用本地包逐个安装。DSH `0.2.1-rc.2` 连续使用远程压缩包 URL 安装时，可能在后续步骤遇到 `ERR_PNPM_MISSING_TARBALL_INTEGRITY`；先下载再安装可避免此路径。不要跳过完整性校验。Assembler 的界面操作与共享服务迁移见[上游安装说明](https://github.com/Player-MINEPIG/dsh-prompt-assembler/blob/v1.1.3/docs/INSTALLATION.md)。
 
 ### 配置与共享依赖
 
