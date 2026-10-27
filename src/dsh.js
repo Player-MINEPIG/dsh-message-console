@@ -3,11 +3,12 @@ import { modelRoute } from './model-selection.js';
 import { isPrivateSource } from './content-capabilities.js';
 import { createModelCatalog } from './model-catalog.js';
 import { assembleInput, serializeInput } from './input-assembly.js';
+import { compactOrganizationMessage } from './github-input.js';
 import { postHistoryText, learningGuidanceText } from './source-context.js';
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { WorkflowExecutor } from './executor.js';
-import { escalationImages } from './escalation-images.js';
+import { escalationImages, ImageInputError } from './escalation-images.js';
 import { openMemoryImageModel } from './memory-image-model.js';
 import { queueConversationBackground, assertStorageOutsideWorkspace } from './agent-tools.js';
 
@@ -53,6 +54,26 @@ export function sessionFailure(reason, sessionId, timing = {}) {
 /** DSH public interfaces only; injected primitives keep fixture tests independent. */
 export function createDshExecutor(ctx, { createUserMessage, SessionId, service, timeoutMs = 300_000, workspaces = createDshWorkspaces(ctx) }) {
   const domain = () => typeof service === 'function' ? service() : service;
+  // Native assembly checks history size before agent/request is dispatched.
+  ctx.on?.('system-prompt/assemble', async (assembly, context, next) => {
+    const agent = context.agent;
+    if (agent?.status === 'running' && !context.dshAssemblerRaw && !context.tavernAssemblyPreview && domain()?.sessionBinding?.(String(agent.session.id), agent.session.header.cwd)) {
+      context.signal?.throwIfAborted();
+      const session = agent.session, events = session.snapshotEvents(), messages = new Map(session.deriveMessages().map(message => [message.id, message]));
+      for (const seq of [...session.surface.nodes]) {
+        const event = events[seq];
+        if (event?.type !== 'user/message') continue;
+        const message = messages.get(event.data.id);
+        if (!message) continue;
+        const projected = compactOrganizationMessage(message);
+        if (projected === message) continue;
+        session.append('user/message', { ...projected, source: { ...projected.source, projection: { kind: 'github-summary-v1', originalSeq: seq } } }, {
+          surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq],
+        });
+      }
+    }
+    return next();
+  }, { prepend: true });
   async function create({ provider, model, instructions, title, onSession, workspaceId, postHistoryInstruction, runId, batchId, role, draftId }) {
     const workspace = await workspaces.resolve(workspaceId);
     await assertStorageOutsideWorkspace(domain().storageDirectory(), workspace.path);
@@ -128,20 +149,34 @@ export function createDshExecutor(ctx, { createUserMessage, SessionId, service, 
   async function runAgent(options) {
     if (!options.transientImages) return runSession(options);
     const transports = new Map();
-    let current;
+    let current, imageFailure;
     const memory = {
       isDispatch: request => [...transports.values()].some(transport => transport.isDispatch(request)),
       async *stream(request, messageId) {
-        const key = JSON.stringify([request.provider, request.model]);
-        current = transports.get(key);
-        if (!current) {
-          current = await openMemoryImageModel(ctx, { provider: request.provider, model: request.model, signal: request.signal, images: [...options.transientImages] });
-          transports.set(key, current);
+        imageFailure = undefined;
+        try {
+          const key = JSON.stringify([request.provider, request.model]);
+          current = transports.get(key);
+          if (!current) {
+            current = await openMemoryImageModel(ctx, { provider: request.provider, model: request.model, signal: request.signal, images: [...options.transientImages] });
+            transports.set(key, current);
+          }
+          yield* current.stream(request, messageId);
+        } catch (error) {
+          if (error instanceof ImageInputError) imageFailure = error;
+          throw error;
         }
-        yield* current.stream(request, messageId);
       },
     };
     try { return { ...await runSession(options, memory), imageInput: current?.summary() }; }
+    catch (error) {
+      options.signal?.throwIfAborted();
+      if (imageFailure && error.sessionFailure?.code !== 'TIMEOUT' && !error.sessionFailure?.cancellationSource) {
+        imageFailure.sessionFailure = error.sessionFailure;
+        throw imageFailure;
+      }
+      throw error;
+    }
     finally { try { await Promise.all([...transports.values()].map(transport => transport.close())); } finally { options.transientImages.length = 0; } }
   }
   async function runSession({ role, input, instructions, provider, model, signal, onSession, title, workspaceId, postHistoryInstruction, runId, batchId, draftId, timeoutMs: stageTimeoutMs = timeoutMs }, memory) {

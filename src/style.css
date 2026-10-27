@@ -50,3 +50,5 @@
 .dmc-global-settings .dmc-credential-card form{display:block;margin-top:14px}.dmc-credential-card>p{margin-top:8px}
 
 .dmc-organization-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}.dmc-organization-heading>button{flex-shrink:0;font-size:12px;padding:5px 10px}
+
+.dmc-tags .dmc-tag-error{background:#fae7e1;color:#973f2c;border-color:#dfab9b}

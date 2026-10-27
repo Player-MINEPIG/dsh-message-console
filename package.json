@@ -46,6 +46,7 @@
   },
   "devDependencies": {
     "dsh-jev-plugin": "https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/2ec0510ffcdabe790df8c93b0b40aee07b93c342",
+    "dsh-magpie-connect": "https://codeload.github.com/Player-MINEPIG/dsh-magpie-connect/tar.gz/80d107a7073a20a1bbbde3129e428c39ea94f2dd",
     "esbuild": "0.28.2",
     "react": "18.3.1",
     "react-dom": "18.3.1"

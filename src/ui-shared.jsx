@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { request } from './api.js';
 import { ModelSettingField } from './model-selector.jsx';
-export const labels = { github: 'GitHub', bilibili: '哔哩哔哩', issue: 'Issue', pr: 'Pull request', comment: '评论对话', 'private-message':'私信对话', release: 'Release', 'pending-supervision': '等待独立监督', superseded: '已被新稿替换', ready: '等待你审核', blocked: '监督已拦截', stale: '上下文已变化', sent: '已发布', sending: '发送中', unknown: '结果待核实', dismissed: '暂不发布', none: '无需处理', pending: '待处理', later: '稍后处理', done: '已处理' };
+export const labels = { github: 'GitHub', bilibili: '哔哩哔哩', issue: 'Issue', pr: 'Pull request', comment: '评论对话', 'private-message':'私信对话', release: 'Release', 'pending-supervision': '等待独立监督', superseded: '已被新稿替换', ready: '等待你审核', blocked: '监督已拦截', stale: '上下文已变化', sent: '已发布', sending: '发送中', unknown: '结果待核实', dismissed: '暂不发布', none: '无需处理', pending: '待处理', later: '待处理', done: '已处理' };
 export const githubStateLabel = item => ['issue','pr'].includes(item.kind) ? (item.payload?.merged || String(item.payload?.state).toLowerCase()==='merged' ? '已合并' : ({open:'开放',closed:'已关闭'})[String(item.payload?.state).toLowerCase()]) : null;
 export const time = value => value ? new Date(value).toLocaleString('zh-CN', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' }) : '尚未执行';
 export const safeURL = value => { try { const url = new URL(value); return ['https:','http:'].includes(url.protocol) ? url.href : undefined; } catch { return undefined; } };

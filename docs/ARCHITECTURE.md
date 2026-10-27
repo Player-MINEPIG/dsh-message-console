@@ -103,7 +103,7 @@ DSH通过Assembler native前置system定义任务与不可信输入边界，pre-
 
 `src/input-assembly.js` 是浏览器与服务端共享的纯函数模块。`assembleInput(source, item, { language, stage })` 生成有序 `blocks`，每个块具有 `key`、`label` 与 `value`。`serializeInput(input, extras)` 将块和当前步骤附加数据序列化。资料按 `resolvedMaterials` 的数组顺序装入，不重复装入原始文件配置。
 
-来源信息块包含名称、平台、目标、简介、标签及关注规则。当前内容块白名单保留采集的 ID、类型、标题、正文、URL、完整 payload、内容版本、变化时间及前版原文，不携带插件内部 analysis、draft、sessions 或个人处理状态。Agent 的真实 user 消息外层保持 `{ role, input }`。升级判断的 `decision` 和监督的 `draft` 各追加一次。人工背景通过同一组装函数准备为待用输入，由宿主在首次用户轮接受为真实 user 历史。Jev 的 `state` 使用相同顺序的块，可信 PHI 留在问题 `instructions`。数据块顺序不会改变消息角色或提升平台内容的可信级别。
+来源信息块包含名称、平台、目标、简介、标签及关注规则。当前内容块白名单保留采集的 ID、类型、标题、正文、URL、内容版本及变化时间。GitHub 输入按下面的有界合同提供概要，其他平台保留各自的数据范围，不携带插件内部 analysis、draft、sessions 或个人处理状态。Agent 的真实 user 消息外层保持 `{ role, input }`。升级判断的 `decision` 和监督的 `draft` 各追加一次。人工背景通过同一组装函数准备为待用输入，由宿主在首次用户轮接受为真实 user 历史。Jev 的 `state` 使用相同顺序的块，可信 PHI 留在问题 `instructions`。数据块顺序不会改变消息角色或提升平台内容的可信级别。
 
 `POST /api/dsh-message-console/sources/preview` 接收 `{ source, sourceId?, itemId?, stage? }`。`source` 是尚未保存的来源表单，另可传 `stage`，默认 `generation`，验证与保存共用相同合同。已有来源必须匹配平台、目标及类型。内容项只从服务端状态中读取，并验证归属。新来源无 `sourceId` 时不能指定实际内容项。预览经 `workspaces.resolve` 和 `prepareSource` 解析显式文件，沿用隐藏目录、符号链接、文本类型及大小限制，不改变状态。
 
@@ -115,7 +115,7 @@ DSH通过Assembler native前置system定义任务与不可信输入边界，pre-
 
 `src/dashboard.js` 保留当前分析、优先级和需处理判定的纯规则，供 Store 更新内容投影。来源计数由同一事务维护，平台统计在后端基于来源摘要计算，前端不读取全库内容重新聚合。综合分数为当前版本重要性乘 10，加上有依据的紧急性修正 3，再以需要处理数、未读数、`changedAt` 和稳定 ID 排序。最近更新模式以 `changedAt` 为首键，`fetchedAt` 只用于显示抓取状态。旧内容版本的分析不参与摘要、重要性或紧急性判断。
 
-未读数与需要处理数均按内容项 ID 去重。待处理和暂后处理会计入；尚未关闭的 `pending-supervision`、`ready`、`blocked`、`stale`、`sending`、`unknown` 草稿也会计入同一内容项。“本轮已处理”阻止旧人工介入分析重新产生待处理计数，但不能代替关闭尚存草稿。
+未读数与需要处理数均按内容项 ID 去重。待处理、整理错误及 human/review 审核意见会计入；尚未关闭的 `pending-supervision`、`ready`、`blocked`、`stale`、`sending`、`unknown` 草稿也会计入同一内容项。“本轮已处理”阻止旧人工介入分析重新产生待处理计数，但不能代替关闭尚存草稿。
 
 `src/client.jsx` 用单个页面状态选择总览、全部平台、全部来源、平台来源、来源详情、全局配置、新建或编辑来源。插件没有内部侧边栏。`src/dashboard-view.jsx` 展示列表和内容项，`src/source-editor.jsx` 负责来源表单及可排序的真实输入预览，`src/ui-shared.jsx` 保存通用字段与请求组件。
 
@@ -335,3 +335,22 @@ B站根评论作者以 `rootAuthorId` 身份元数据保存在内容项当前状
 B站 adapter 复用 CookieTransport 与身份检查，临时0600文件验证成功后 rename 激活新连接器，原外部 cookieFile 不修改。已有私信 accountId 必须保持。GitHub adapter 用无 shell、固定参数的 gh 子进程执行设备流，丢弃原始输出，仅解析一次性验证码；不启动服务器浏览器，不向前端传令牌。全局凭据互斥与 ConsoleService 任务门禁防止轮次中切换身份，宿主卸载等待保存结束并终止登录进程。
 
 来源的手动刷新与整理在前端按来源 ID 保留在途状态，切换页面不会丢失，同一来源防止重复提交，其他来源可独立操作。后端继续以来源为单位互斥；禁用按钮的悬停提示说明当前来源已有刷新或整理运行。
+
+
+## 单项错误恢复
+
+自动分析失败或中断且未采纳结果时，内容保存 organizationError（runId/version/message/at）和 autoOrganizationPaused=true，进入待处理。错误标签优先于已整理/未整理，旧分析仍保留。定时整理、刷新并整理、整理已有数据均跳过暂停项，采集新内容不解除暂停。
+
+- POST /items/:id/organize 接收 {version}，强制只重跑当前条目，与该来源刷新/整理共用互斥锁。成功采纳后清错误并恢复自动整理；失败继续暂停。
+- POST /items/:id/automation 接收 {paused}，手动暂停/恢复；有未解决错误时只能通过重新整理恢复。
+- POST /items/:id/handling 只接受 none/pending/done。旧 later 一次迁移为 pending；既有已处理状态保留。旧 review 未确认项补入待处理，旧当前版本最后失败项补错误和暂停，历史 run/receipt/分析正文不改。
+
+路径均位于 /api/dsh-message-console 下，沿用宿主认证和同源写入校验。
+
+## GitHub 输入与按需读取
+
+完整采集数据仍入库，初始模型输入不包含 PR patch/diff。文件只提供最多40个概要并声明总数、未读范围与工具入口；正文、讨论及审查意见使用有界摘录。来源规则要求委派时，Agent 可据此交给指定设备处理详情。
+
+dmc_read_item 增加 section=files，按 page/pageSize 返回 filename/status/additions/deletions/changes/patchAvailable；section=file 按 filePath/offset/length 读取对应版本的已存 patch，每次最多32000字符。filePath 仅匹配数据库文件名，不读取服务器路径；未提供 patch 时明确 unavailable。普通工作区及受管会话保留来源访问边界。HTTP 对应 GET /items/:id/files 和 GET /items/:id/content?section=file&filePath=...。
+
+旧 GitHub 会话在 system-prompt/assemble 原生钩子中，将当前上下文内本插件的完整旧输入替换为有界概要。仅真实运行且绑定有效时执行，不影响预览；保留原事件、message ID 和 sourceEventSeqs 派生引用。人工消息和工具记录不重写，后续冷恢复使用同一概要，不重复追加。

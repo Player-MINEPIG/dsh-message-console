@@ -1,5 +1,7 @@
 import sharp from 'sharp';
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { ImageInputError } from './escalation-images.js';
 
 const digest = data => createHash('sha256').update(data).digest('hex');
@@ -35,18 +37,40 @@ export function memoryImageStore(images, onProjection = () => {}) {
   };
 }
 
+async function magpieAdapter(module, config, store, model, signal) {
+  let page;
+  try { page = JSON.parse(await readFile(join(config.dataDir, 'settings.json'), 'utf8')); }
+  catch (error) { if (error.code !== 'ENOENT') throw new ImageInputError('无法读取 Magpie 已保存的生效配置，未转发图片。'); page = {}; }
+  if (!page || typeof page !== 'object' || Array.isArray(page) || ['baseUrl', 'apiKey'].some(key => page[key] !== undefined && typeof page[key] !== 'string')) throw new ImageInputError('Magpie 已保存的配置无效，未转发图片。');
+  const endpoint = module.resolveEffectiveEndpoint(config, page);
+  if (!module.isConfigured(endpoint)) throw new ImageInputError('Magpie 图片路线未配置有效的地址和凭据。');
+  signal?.throwIfAborted();
+  const catalog = new module.ModelCatalog({ ...endpoint, fetchImpl: (url, options) => fetch(url, { ...options, signal: signal ? AbortSignal.any([signal, options.signal]) : options.signal }) });
+  await catalog.refreshOnce();
+  signal?.throwIfAborted();
+  if (!catalog.getEntry(model)) throw new ImageInputError('未能从 Magpie 当前目录确认所选图片模型，请检查模型目录后重试。');
+  if (!catalog.supportsImage(model)) throw new ImageInputError('Magpie 当前模型未声明支持图片，未调用模型。');
+  return new module.MagpieAdapter(catalog, { ...config, magpieBaseUrl: endpoint.baseUrl, apiKey: endpoint.apiKey, resolveAttachments: () => store });
+}
+
 export async function openMemoryImageModel(ctx, { provider, model, images, signal }) {
   signal?.throwIfAborted();
   const route = ctx.llm.listConfigurableProviders().find(entry => entry.provider === provider);
   const entries = ctx.get?.('configEditor')?.entries() ?? [...(ctx.root?.get('loader')?.entries() ?? [])];
-  const matches = route ? entries.filter(entry => (entry.options.id === route.settingsNs || entry.id === route.settingsNs) && entry.fiber && entry.moduleNamespace?.PiAiAdapter && entry.fiber.config.providers?.get?.()?.[provider]) : [];
+  const matches = entries.flatMap(entry => {
+    if (!entry.fiber) return [];
+    const module = entry.moduleNamespace;
+    if (module?.MagpieAdapter && module?.ModelCatalog && module?.resolveConfig && module?.resolveEffectiveEndpoint && module?.isConfigured) {
+      const config = module.resolveConfig(entry.fiber.config);
+      return config.providerId === provider ? [{ entry, kind: 'magpie', config }] : [];
+    }
+    return route && (entry.options.id === route.settingsNs || entry.id === route.settingsNs) && module?.PiAiAdapter && entry.fiber.config.providers?.get?.()?.[provider] ? [{ entry, kind: 'pi-ai' }] : [];
+  });
   if (matches.length !== 1) throw new ImageInputError(matches.length > 1 ? '所选模型对应多个生效配置，无法确定图片转发路线，请检查宿主模型配置。' : '当前模型路线不支持内存图片转发，或未找到所选模型的生效配置。');
-  const entry = matches[0];
+  const { entry, kind, config } = matches[0];
   const module = entry?.moduleNamespace;
-  if (!entry?.fiber || !module?.PiAiAdapter || !module?.apply || !module?.Config) throw new ImageInputError('当前模型路线不支持内存图片转发，请使用宿主 pi-ai 模型路线。');
-  const configured = entry.fiber.config.providers.get()[provider];
-  if (!configured) throw new ImageInputError('未找到当前模型路线的生效配置，未转发图片。');
-  const projections = new Map(), profile = structuredClone(configured), store = memoryImageStore(images, (id, info) => projections.set(id, info));
+  if (kind === 'pi-ai' && (!module?.apply || !module?.Config)) throw new ImageInputError('当前 pi-ai 模型路线不支持内存图片转发。');
+  const projections = new Map(), store = memoryImageStore(images, (id, info) => projections.set(id, info));
   let llm, owner;
   try {
     const namespace = await entry.parent.tree.import('@deepseek-ai/dsh-llm');
@@ -55,7 +79,8 @@ export async function openMemoryImageModel(ctx, { provider, model, images, signa
     owner = await scope.plugin({ async apply(child) {
       child.provide('attachments', store);
       llm = new Runtime(child);
-      await child.plugin({ Config: module.Config, inject: module.inject, apply: module.apply }, { providers: { [provider]: profile } });
+      if (kind === 'magpie') llm.registerAdapter([provider], await magpieAdapter(module, config, store, model, signal));
+      else await child.plugin({ Config: module.Config, inject: module.inject, apply: module.apply }, { providers: { [provider]: structuredClone(entry.fiber.config.providers.get()[provider]) } });
     } });
     const info = await llm.resolveModelInfo(provider, model, signal);
     if (!info.inputModalities?.includes('image')) throw new ImageInputError('内存转发路线未声明支持图片，未调用模型。');

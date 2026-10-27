@@ -35,7 +35,7 @@ export function ConsoleApp({openSession=()=>{},close,demo=false}) {
   const catalog=useModelCatalog();
   const [error,setError]=useState(''),[pending,setPending]=useState(false),[revision,setRevision]=useState(0);
   const [feedbackDirty,setFeedbackDirty]=useState(false);
-  const sourceOperationsRef=useRef(new Map());
+  const sourceOperationsRef=useRef(new Map()),selectionRequest=useRef(0);
   const [sourceOperations,setSourceOperations]=useState(new Map());
   const mayLeave=()=>!feedbackDirty||window.confirm('评价尚未保存。离开会放弃本次修改，是否继续？');
   const [page,setPage]=useState({kind:'overview'}),[order,setOrder]=useState('priority'),[selected,setSelected]=useState(null),[returnPage,setReturnPage]=useState({kind:'overview'});
@@ -44,23 +44,29 @@ export function ConsoleApp({openSession=()=>{},close,demo=false}) {
   const sourceResource=useRemoteResource(page.kind==='edit'?`sources/${encodeURIComponent(page.id)}`:null);
   const workspaces=useRemoteResource(['create','edit'].includes(page.kind)?'workspaces':null);
   const action=async(path,body={})=>{setPending(true);setError('');try{const result=await request(path,body);setRevision(value=>value+1);return result;}catch(error){setError(error.message);return null;}finally{setPending(false);}};
-  const organizeSource=async(sourceId,operation)=>{
+  const organizeSource=async(sourceId,operation,item)=>{
     const operations=sourceOperationsRef.current;
     if(operations.has(sourceId))return;
     operations.set(sourceId,operation);setSourceOperations(new Map(operations));setError('');
-    try{await request(`sources/${encodeURIComponent(sourceId)}/${operation}`,{});}
+    try{await request(item?`items/${encodeURIComponent(item.id)}/organize`:`sources/${encodeURIComponent(sourceId)}/${operation}`,item?{version:item.version}:{});}
     catch(error){setError(error.message);}
     finally{operations.delete(sourceId);setSourceOperations(new Map(operations));setRevision(value=>value+1);}
   };
-  const navigate=next=>{if(!mayLeave())return;setFeedbackDirty(false);if(next.kind==='source'&&['overview','sources','platform'].includes(page.kind))setReturnPage(page);else if(next.kind==='source'&&page.kind==='create')setReturnPage({kind:'overview'});setPage(next);setSelected(null);};
+  const navigate=next=>{if(!mayLeave())return;selectionRequest.current++;setFeedbackDirty(false);if(next.kind==='source'&&['overview','sources','platform'].includes(page.kind))setReturnPage(page);else if(next.kind==='source'&&page.kind==='create')setReturnPage({kind:'overview'});setPage(next);setSelected(null);};
   const source=state?.sources.find(source=>source.id===page.id);
-  const deselect=()=>{if(mayLeave()){setSelected(null);setFeedbackDirty(false);}};
-  const learn=async sourceId=>{if(!mayLeave())return;const batch=await action('learning',{sourceId});if(batch){setFeedbackDirty(false);setSelected(null);setPage({kind:'feedback',id:sourceId,batchId:batch.id??batch.batchId});}};
-  const select=item=>{if(selected?.id===item.id&&selected?.version===item.version)return;if(!mayLeave())return;setFeedbackDirty(false);setSelected({id:item.id,version:item.version});void action(`items/${encodeURIComponent(item.id)}/read`,{version:item.version});};
+  const deselect=()=>{if(mayLeave()){selectionRequest.current++;setSelected(null);setFeedbackDirty(false);}};
+  const learn=async sourceId=>{if(!mayLeave())return;selectionRequest.current++;const batch=await action('learning',{sourceId});if(batch){setFeedbackDirty(false);setSelected(null);setPage({kind:'feedback',id:sourceId,batchId:batch.id??batch.batchId});}};
+  const select=(item,focusDetail=false)=>{if(selected?.id===item.id&&selected?.version===item.version&&!focusDetail)return;if(!mayLeave())return;selectionRequest.current++;setFeedbackDirty(false);setSelected({id:item.id,version:item.version,focusRequest:focusDetail?selectionRequest.current:0});void action(`items/${encodeURIComponent(item.id)}/read`,{version:item.version});};
+  const selectFailure=async itemId=>{
+    if(!mayLeave())return;
+    const ticket=++selectionRequest.current;setError('');
+    try{const item=await request(`items/${encodeURIComponent(itemId)}`);if(ticket===selectionRequest.current)select(item,true);}
+    catch(error){if(ticket===selectionRequest.current)setError(error.message);}
+  };
   return <div className="dmc-app"><header className="dmc-header"><div><span className="dmc-eyebrow">YOUR SOURCES, IN ONE PLACE</span><h1>看点什么<span className="dmc-dot">.</span></h1></div><div className="dmc-top-actions">{demo&&<span className="dmc-pill">本地模拟 · 不连接真实账号</span>}<nav aria-label="看点什么导航"><button className={['overview','platforms','sources','platform','source'].includes(page.kind)?'active':''} onClick={()=>navigate({kind:'overview'})}>总览</button><button className={page.kind==='feedback'?'active':''} onClick={()=>navigate({kind:'feedback'})}>学习记录</button><button className={page.kind==='settings'?'active':''} onClick={()=>navigate({kind:'settings'})}>全局配置</button><button className={page.kind==='create'?'active':''} onClick={()=>navigate({kind:'create'})}>＋ 添加来源</button></nav>{close&&<button aria-label="关闭" onClick={()=>{if(mayLeave())close();}}>×</button>}</div></header>
     {error&&<div role="alert" className="dmc-alert">{error}<button onClick={()=>setError('')}>关闭</button></div>}
     <ResourceError error={overview.error}/>
-    {!state?<div className="dmc-empty">正在连接消息服务…</div>:page.kind==='feedback'?<FeedbackPanel key={page.id??'all'} sources={state.sources} sourceId={page.id} batchId={page.batchId} revision={revision} action={action} pending={pending} openSession={openSession} onBack={()=>navigate(page.id?{kind:'source',id:page.id}:{kind:'overview'})}/>:page.kind==='settings'?<GlobalSettings catalog={catalog} state={state} action={action} pending={pending}/>:['create','edit'].includes(page.kind)?<><ResourceError error={sourceResource.error||workspaces.error}/>{(page.kind==='create'||sourceResource.data)&&workspaces.data?<SourceEditor catalog={catalog} key={page.id??'new'} source={sourceResource.data} state={{...state,workspaces:workspaces.data}} action={action} pending={pending} onBack={()=>navigate(source?{kind:'source',id:source.id}:{kind:'overview'})} onSaved={id=>navigate({kind:'source',id})}/>:<p className="dmc-empty">正在加载来源配置…</p>}</>:page.kind==='source'&&source?<SourcePage key={source.id} source={source} state={state} operation={sourceOperations.get(source.id)} onOrganize={operation=>organizeSource(source.id,operation)} action={action} pending={pending} revision={revision} onBack={()=>navigate(returnPage)} onEdit={()=>navigate({kind:'edit',id:source.id})} onLearn={()=>learn(source.id)} onLearningHistory={()=>navigate({kind:'feedback',id:source.id})} selected={selected?.id} onSelect={select} onDeselect={deselect} detail={selected&&<Detail key={`${selected.id}:${selected.version}`} selection={selected} source={source} revision={revision} action={action} pending={pending} openSession={openSession} close={deselect} onFeedbackDirty={setFeedbackDirty} onFeedbackSaved={()=>setRevision(value=>value+1)}/>}/>:<Dashboard state={state} page={page} order={order} setOrder={setOrder} onNavigate={navigate} action={action} pending={pending}/>}
+    {!state?<div className="dmc-empty">正在连接消息服务…</div>:page.kind==='feedback'?<FeedbackPanel key={page.id??'all'} sources={state.sources} sourceId={page.id} batchId={page.batchId} revision={revision} action={action} pending={pending} openSession={openSession} onBack={()=>navigate(page.id?{kind:'source',id:page.id}:{kind:'overview'})}/>:page.kind==='settings'?<GlobalSettings catalog={catalog} state={state} action={action} pending={pending}/>:['create','edit'].includes(page.kind)?<><ResourceError error={sourceResource.error||workspaces.error}/>{(page.kind==='create'||sourceResource.data)&&workspaces.data?<SourceEditor catalog={catalog} key={page.id??'new'} source={sourceResource.data} state={{...state,workspaces:workspaces.data}} action={action} pending={pending} onBack={()=>navigate(source?{kind:'source',id:source.id}:{kind:'overview'})} onSaved={id=>navigate({kind:'source',id})}/>:<p className="dmc-empty">正在加载来源配置…</p>}</>:page.kind==='source'&&source?<SourcePage key={source.id} source={source} state={state} operation={sourceOperations.get(source.id)} onOrganize={operation=>organizeSource(source.id,operation)} action={action} pending={pending} revision={revision} onBack={()=>navigate(returnPage)} onEdit={()=>navigate({kind:'edit',id:source.id})} onLearn={()=>learn(source.id)} onLearningHistory={()=>navigate({kind:'feedback',id:source.id})} selected={selected?.id} onSelect={select} onSelectFailure={selectFailure} onDeselect={deselect} detail={selected&&<Detail key={`${selected.id}:${selected.version}`} selection={selected} source={source} revision={revision} action={action} pending={pending} busy={Boolean(sourceOperations.get(source.id)||state.busy?.includes(`source:${source.id}`))} onReorganize={item=>organizeSource(source.id,'item',item)} openSession={openSession} close={deselect} onFeedbackDirty={setFeedbackDirty} onFeedbackSaved={()=>setRevision(value=>value+1)}/>}/>:<Dashboard state={state} page={page} order={order} setOrder={setOrder} onNavigate={navigate} action={action} pending={pending}/>}
 
   </div>;
 }
@@ -68,24 +74,30 @@ function GlobalSettings({state,action,pending,catalog}) {
   const [values,setValues]=useState(state.settings),[tab,setTab]=useState('defaults');
   return <main className="dmc-settings dmc-global-settings"><span className="dmc-eyebrow">MAKE IT YOURS</span><h2>全局配置</h2><nav className="dmc-settings-tabs" aria-label="全局配置分类"><button aria-pressed={tab==='defaults'} onClick={()=>setTab('defaults')}>默认配置</button><button aria-pressed={tab==='credentials'} onClick={()=>setTab('credentials')}>平台凭据</button></nav>{tab==='credentials'?<CredentialsPanel/>:<><p className="dmc-muted">默认值按能力生效。来源可以单独覆盖，发布授权独立管理。清空字段恢复内置默认值。</p><CatalogStatus catalog={catalog}/><ModelWorkflowInfo/><form onSubmit={event=>{event.preventDefault();void action('settings',values);}}><SettingFields catalog={catalog} parameters={state.parameters} values={values} onChange={setValues}/><button className="dmc-primary" disabled={pending}>保存</button></form><ImageCachePanel revision={state.revision}/></>}</main>;
 }
-function Detail({selection,source,revision,action,pending,openSession,close,onFeedbackDirty,onFeedbackSaved}) {
-  const root=`items/${encodeURIComponent(selection.id)}`;
-  const header=useRemoteResource(`${root}?version=${encodeURIComponent(selection.version)}`,{revision,pollMs:5000}),item=header.data;
-  return <section className="dmc-detail"><header><span>{item?labels[item.kind]:'内容详情'}</span><button aria-label="关闭详情" onClick={close}>×</button></header><ResourceError error={header.error}/>{!item?<p>正在加载详情…</p>:<><h2>{item.title}</h2>{githubStateLabel(item)&&<p>{githubStateLabel(item)}</p>}<a href={safeURL(item.url)} target="_blank" rel="noreferrer">查看原始来源 ↗</a><div className="dmc-detail-actions"><select aria-label="处理状态" value={item.handling} onChange={event=>action(`${root}/handling`,{handling:event.target.value})}>{['none','pending','later','done'].map(value=><option key={value} value={value}>{labels[value]}</option>)}</select><button disabled={pending} onClick={async()=>{const result=await action(`${root}/conversation`);if(result)openSession(result.sessionId);}}>{item.kind==='private-message'?'进入会话阅读 ↗':'进入会话处理 ↗'}</button></div>
-    {currentAnalysis(item)&&<div className="dmc-analysis"><h3>整理结果</h3><p>{item.analysis.summary}</p><small>{item.analysis.reason}</small></div>}
+function Detail({selection,source,revision,action,pending,busy,onReorganize,openSession,close,onFeedbackDirty,onFeedbackSaved}) {
+  const root=`items/${encodeURIComponent(selection.id)}`,detailRef=useRef(null),focused=useRef(0);
+  const header=useRemoteResource(selection.version?`${root}?version=${encodeURIComponent(selection.version)}`:root,{revision,pollMs:5000}),item=header.data;
+  useEffect(()=>{if(selection.focusRequest&&item&&focused.current!==selection.focusRequest){focused.current=selection.focusRequest;detailRef.current?.scrollIntoView({block:'start'});detailRef.current?.focus({preventScroll:true});}},[selection.focusRequest,item]);
+  return <section ref={detailRef} tabIndex={-1} aria-label="内容详情" className="dmc-detail"><header><span>{item?labels[item.kind]:'内容详情'}</span><button aria-label="关闭详情" onClick={close}>×</button></header><ResourceError error={header.error}/>{!item?<p>正在加载详情…</p>:<ItemDetailBody item={item} root={root} source={source} revision={revision} action={action} pending={pending} busy={busy} onReorganize={onReorganize} openSession={openSession} onFeedbackDirty={onFeedbackDirty} onFeedbackSaved={onFeedbackSaved}/>}</section>;
+}
+export function ItemDetailBody({item,root,source,revision,action,pending,busy,onReorganize,openSession,onFeedbackDirty,onFeedbackSaved}) {
+  return <><h2>{item.title}</h2>{githubStateLabel(item)&&<p>{githubStateLabel(item)}</p>}<a href={safeURL(item.url)} target="_blank" rel="noreferrer">查看原始来源 ↗</a><div className="dmc-detail-actions"><select aria-label="处理状态" disabled={pending} value={item.handling==='later'?'pending':item.handling} onChange={event=>action(`${root}/handling`,{handling:event.target.value})}>{['none','pending','done'].map(value=><option key={value} value={value}>{labels[value]}</option>)}</select><button disabled={pending} onClick={async()=>{const result=await action(`${root}/conversation`);if(result)openSession(result.sessionId);}}>{item.kind==='private-message'?'进入会话阅读 ↗':'进入会话处理 ↗'}</button><button disabled={pending||busy} title={busy?'此来源正在刷新或整理，请完成后再试。':'只重新整理当前条目，成功后恢复自动整理。'} onClick={()=>onReorganize(item)}>{busy?'整理进行中…':'重新整理'}</button><button disabled={pending||busy||Boolean(item.organizationError&&item.autoOrganizationPaused)} title={item.organizationError?'请先重新整理，成功后恢复自动整理。':undefined} onClick={()=>action(`${root}/automation`,{paused:!item.autoOrganizationPaused})}>{item.autoOrganizationPaused?'恢复自动整理':'暂停自动整理'}</button></div>
+    {item.organizationError&&<div className="dmc-organization dmc-organization-error" role="alert"><strong>整理错误</strong><p>{item.organizationError.message}</p></div>}
+    {item.autoOrganizationPaused&&<p className="dmc-muted">此条目已暂停自动整理。可以手动重新整理，成功后恢复自动整理；标记已处理不会恢复。</p>}
+    {currentAnalysis(item)&&<div className="dmc-analysis"><h3>整理意见</h3><p>{item.analysis.summary}</p>{item.analysis.reason&&<Expandable title="判断依据与技术细节"><p>{item.analysis.reason}</p></Expandable>}</div>}
     <ImageGallery itemId={item.id} version={item.version} images={item.payload?.images}/>
     <ChangeReason organization={item.organization}/>
     {item.kind==='comment'&&item.organization?.reason?.comments?.samples?.length>0&&<Expandable title="本轮楼中楼变化" initialOpen><ChangedComments key={`${item.id}:${item.organization.reason.baseVersion}:${item.version}`} root={root} reason={item.organization.reason}/></Expandable>}
     <FeedbackEditor item={item} revision={revision} onDirtyChange={onFeedbackDirty} onSaved={onFeedbackSaved}/>
     <VideoContext root={root} item={item}/>
     {item.payload?.contextLimit&&<p className="dmc-muted">{item.payload.contextLimit}</p>}
-    {item.kind==='private-message'&&<p className="dmc-muted">{item.payload?.collection?.note} 模型只读取最近100条、正文合计最多24000字符，每条最多2000字符。图片和卡片仅提供文字、元信息与占位。{item.payload?.visibilityLimit}</p>}<Expandable title="原始内容" initialOpen><ContentChunks path={`${root}/content?version=${encodeURIComponent(item.version)}&section=body`}/></Expandable>
+    {item.kind==='private-message'&&<p className="dmc-muted">{item.payload?.collection?.note} 模型只读取最近100条、正文合计最多24000字符，每条最多2000字符。图片和卡片仅提供文字、元信息与占位。{item.payload?.visibilityLimit}</p>}<Expandable title="原始内容"><ContentChunks path={`${root}/content?version=${encodeURIComponent(item.version)}&section=body`}/></Expandable>
     {item.commentsCount>0&&<Expandable title={`已采集的${item.kind==='private-message'?'消息':'评论'} · ${item.commentsCount} 条`}><Comments root={root} version={item.version} privateMessages={item.kind==='private-message'}/></Expandable>}
     {item.diffLength>0&&<Expandable title="已采集的 PR diff"><ContentChunks path={`${root}/content?version=${encodeURIComponent(item.version)}&section=diff`}/></Expandable>}
     <Expandable title="历史版本"><Versions root={root} privateMessages={item.kind==='private-message'}/></Expandable>
     <>{canDraft(item.kind)&&<Drafts root={root} source={source} revision={revision} pending={pending} action={action}/>}</>
     <WorkRecords item={item} root={root} revision={revision} openSession={openSession}/>
-  </>}</section>;
+  </>;
 }
 export function VideoContext({root,item}) {
   const video=item.payload?.video;
@@ -128,7 +140,7 @@ function Versions({root,privateMessages=false}) {
 }
 function Drafts({root,source,revision,pending,action}) {
   const [page,setPage]=useState(1),resource=useRemoteResource(`${root}/drafts?page=${page}&pageSize=10`,{revision,pollMs:5000}),data=resource.data;
-  return <><h3>发布草稿</h3><p className="dmc-muted">存稿后由独立监督检查。监督通过仍等待你批准发布。</p><ResourceError error={resource.error}/>{data?.items.map(draft=><Draft key={draft.id} draft={draft} revision={revision} source={source} pending={pending} action={action}/>)}{data&&!data.items.length&&<p className="dmc-muted">尚无草稿。</p>}{data&&<ListPagination pagination={data} onPage={setPage} label="草稿分页"/>}</>;
+  return <><h3>回复草稿</h3><p className="dmc-muted">与整理意见分开保存。存稿后由独立监督检查；已授权的B站评论可自动发送，其他草稿等待你批准发布。</p><ResourceError error={resource.error}/>{data?.items.map(draft=><Draft key={draft.id} draft={draft} revision={revision} source={source} pending={pending} action={action}/>)}{data&&!data.items.length&&<p className="dmc-muted">尚无草稿。</p>}{data&&<ListPagination pagination={data} onPage={setPage} label="草稿分页"/>}</>;
 }
 function Draft({draft,source,revision,pending,action}) {
   const [expanded,setExpanded]=useState(false),resource=useRemoteResource(expanded?`drafts/${encodeURIComponent(draft.id)}`:null,{revision}),full=resource.data??draft;
