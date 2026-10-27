@@ -3,6 +3,7 @@ import { modelRoute } from './model-selection.js';
 import { isPrivateSource } from './content-capabilities.js';
 import { createModelCatalog } from './model-catalog.js';
 import { assembleInput, serializeInput } from './input-assembly.js';
+import { compactOrganizationMessage } from './github-input.js';
 import { postHistoryText, learningGuidanceText } from './source-context.js';
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
@@ -53,6 +54,26 @@ export function sessionFailure(reason, sessionId, timing = {}) {
 /** DSH public interfaces only; injected primitives keep fixture tests independent. */
 export function createDshExecutor(ctx, { createUserMessage, SessionId, service, timeoutMs = 300_000, workspaces = createDshWorkspaces(ctx) }) {
   const domain = () => typeof service === 'function' ? service() : service;
+  // Native assembly checks history size before agent/request is dispatched.
+  ctx.on?.('system-prompt/assemble', async (assembly, context, next) => {
+    const agent = context.agent;
+    if (agent?.status === 'running' && !context.dshAssemblerRaw && !context.tavernAssemblyPreview && domain()?.sessionBinding?.(String(agent.session.id), agent.session.header.cwd)) {
+      context.signal?.throwIfAborted();
+      const session = agent.session, events = session.snapshotEvents(), messages = new Map(session.deriveMessages().map(message => [message.id, message]));
+      for (const seq of [...session.surface.nodes]) {
+        const event = events[seq];
+        if (event?.type !== 'user/message') continue;
+        const message = messages.get(event.data.id);
+        if (!message) continue;
+        const projected = compactOrganizationMessage(message);
+        if (projected === message) continue;
+        session.append('user/message', { ...projected, source: { ...projected.source, projection: { kind: 'github-summary-v1', originalSeq: seq } } }, {
+          surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq],
+        });
+      }
+    }
+    return next();
+  }, { prepend: true });
   async function create({ provider, model, instructions, title, onSession, workspaceId, postHistoryInstruction, runId, batchId, role, draftId }) {
     const workspace = await workspaces.resolve(workspaceId);
     await assertStorageOutsideWorkspace(domain().storageDirectory(), workspace.path);
