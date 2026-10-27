@@ -1,4 +1,5 @@
 import { containsImages } from './images.js';
+import { githubContentInput } from './github-input.js';
 export const INPUT_BLOCKS = {
   source: '来源信息 / 关注规则',
   context: '来源上下文',
@@ -27,6 +28,7 @@ function materialInput(materials = []) {
 }
 export function contentInput(item) {
   if (!item) return { status: '尚未选择实际内容项。执行时将装入当前内容及已采集讨论。' };
+  if (['issue', 'pr', 'release'].includes(item.kind)) return githubContentInput(item);
   if(item.kind==='private-message') {
     const all=item.payload?.comments??[], recent=all.slice(-100);
     let remaining=24000, truncated=0;
