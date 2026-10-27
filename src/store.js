@@ -204,6 +204,15 @@ class Store {
           }
           this.#run("INSERT INTO meta VALUES('organization-recovery-v1','1')");
         }
+        if (!this.#get("SELECT value FROM meta WHERE key='manual-no-action-v1'")) {
+          for (const row of this.#all(`SELECT id FROM items WHERE handling='none'
+            AND json_extract(data,'$.handlingRevision')>json_extract(data,'$.organizationError.handlingRevision')
+            AND NOT EXISTS (SELECT 1 FROM drafts WHERE item_id=items.id AND status IN ('pending-supervision','ready','blocked','stale','sending','unknown'))`)) {
+            this.#run('UPDATE items SET acknowledged_attention_version=attention_version WHERE id=?', row.id);
+            this.#project(row.id);
+          }
+          this.#run("INSERT INTO meta VALUES('manual-no-action-v1','1')");
+        }
       });
       for (const suffix of ["-wal", "-shm"]) await chmod(filename + suffix, 384).catch((e) => {
         if (e.code !== "ENOENT") throw e;
@@ -404,7 +413,7 @@ class Store {
     return this.#transaction(() => {
       const data = parse(required(this.#itemRow(id), "内容项").data);
       this.#run('UPDATE items SET data=? WHERE id=?', json({ ...data, handlingRevision: (data.handlingRevision ?? 0) + 1 }), id);
-      this.#run("UPDATE items SET handling=?,acknowledged_attention_version=CASE WHEN ?='done' THEN attention_version ELSE acknowledged_attention_version END,attention_version=attention_version+? WHERE id=?", handling, handling, ["pending", "later"].includes(handling) ? 1 : 0, id);
+      this.#run("UPDATE items SET handling=?,acknowledged_attention_version=CASE WHEN ? IN ('none','done') THEN attention_version ELSE acknowledged_attention_version END,attention_version=attention_version+? WHERE id=?", handling, handling, ["pending", "later"].includes(handling) ? 1 : 0, id);
       this.#project(id);
     });
   }
@@ -666,7 +675,7 @@ class Store {
     const data = { ...draft, bodyHash: createHash("sha256").update(json(draft.body)).digest("hex") };
     delete data.body;
     this.#run("INSERT INTO drafts VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data", draft.id, draft.itemId, draft.sourceId, draft.status, draft.body, draft.createdAt ?? (/* @__PURE__ */ new Date()).toISOString(), json(data));
-    if (attentionEvent && (!old || old.status !== draft.status && ["pending-supervision", "ready", "blocked"].includes(draft.status))) this.#advanceAttention(draft.itemId);
+    if (attentionEvent && (!old || old.status !== draft.status && active.includes(draft.status))) this.#advanceAttention(draft.itemId);
   }
   draft(id) {
     const row = this.#get("SELECT * FROM drafts WHERE id=?", id);
