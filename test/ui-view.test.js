@@ -6,8 +6,8 @@ import { build } from 'esbuild';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 const directory=await mkdtemp(join(process.cwd(),'.local/ui-test-'));
-await build({stdin:{contents:"export {ImageGallery,ImageCachePanel} from './src/images-view.jsx'; export {WorkRecord} from './src/work-records.jsx'; export {Dashboard,SourcePage,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination,SettingFields} from './src/ui-shared.jsx'; export {SourceEditor} from './src/source-editor.jsx'; export {CredentialCard} from './src/credentials-view.jsx'; export {ConsoleApp,VideoContext} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
-const {SourceEditor,ImageGallery,ImageCachePanel,WorkRecord,Dashboard,SourcePage,ItemCard,ReadAllControl,ListPagination,SettingFields,ConsoleApp,VideoContext,CredentialCard,FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory}=await import(join(directory,'ui.mjs'));
+await build({stdin:{contents:"export {ImageGallery,ImageCachePanel} from './src/images-view.jsx'; export {WorkRecord} from './src/work-records.jsx'; export {Dashboard,SourcePage,ItemCard,ReadAllControl} from './src/dashboard-view.jsx'; export {ListPagination,SettingFields} from './src/ui-shared.jsx'; export {SourceEditor} from './src/source-editor.jsx'; export {CredentialCard} from './src/credentials-view.jsx'; export {ConsoleApp,VideoContext,ItemDetailBody} from './src/client.jsx'; export {FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory} from './src/feedback-view.jsx';",resolveDir:process.cwd()},outfile:join(directory,'ui.mjs'),bundle:true,format:'esm',platform:'node',packages:'external',loader:{'.css':'empty'}});
+const {SourceEditor,ImageGallery,ImageCachePanel,WorkRecord,Dashboard,SourcePage,ItemCard,ReadAllControl,ListPagination,SettingFields,ConsoleApp,VideoContext,ItemDetailBody,CredentialCard,FeedbackDiff,LearningBatch,FeedbackPanel,LearningHistory}=await import(join(directory,'ui.mjs'));
 test.after(()=>rm(directory,{recursive:true,force:true}));
 const render=(Component,props)=>renderToStaticMarkup(React.createElement(Component,props));
 test('overview renders server summaries without any item or draft collection',()=>{
@@ -93,7 +93,7 @@ test('card status appears once, with handling separate from importance',()=>{
   const pending=render(ItemCard,{item:base,onSelect(){}});
   assert.equal((pending.match(/待处理/g)||[]).length,1);assert.equal((pending.match(/dmc-item-status /g)||[]).length,1);
   assert.match(pending,/dmc-item-status-pending/);assert.match(pending,/>重要</);assert.doesNotMatch(pending,/需要处理|值得关注/);
-  assert.match(render(ItemCard,{item:{...base,handling:'later'},onSelect(){}}),/dmc-item-status-later">稍后处理/);
+  assert.match(render(ItemCard,{item:{...base,handling:'later'},onSelect(){}}),/dmc-item-status-pending">待处理/);
   const done=render(ItemCard,{item:{...base,status:'read',handling:'done',attentionAcknowledged:true},onSelect(){}});
   assert.match(done,/dmc-item-status-done">已处理/);assert.doesNotMatch(done,/待处理|>重要</);
   const next=render(ItemCard,{item:{...base,status:'unread',handling:'none',analysis:null,version:'v2'},onSelect(){}});
@@ -212,4 +212,36 @@ test('organization failure has a close entry; dismissed report stays in details 
  assert.match(render(SourcePage,{...props,source:{...source,organizationReportId:'report-2',dismissedOrganizationId:'report-1'}}),/关闭提示/);
  assert.doesNotMatch(render(SourcePage,{...props,state:{busy:['source:s']}}),/关闭提示/);
  assert.match(render(SourcePage,{...props,pending:true}),/<button type="button" disabled="" title="关闭本轮提示/);
+});
+
+
+test('error cards separate the organization opinion from drafts and hide detailed evidence',()=>{
+ const item={id:'i',kind:'issue',title:'需审核的条目',status:'handling',handling:'pending',version:'v',analyzedVersion:'v',analysis:{summary:'需要用户审核',reason:'LONG TECHNICAL EVIDENCE',importance:2},organizationError:{message:'整理失败'},autoOrganizationPaused:true,draftCount:1};
+ const html=render(ItemCard,{item,onSelect(){}});
+ assert.match(html,/>错误</);assert.doesNotMatch(html,/>已整理<|>未整理<|LONG TECHNICAL EVIDENCE/);
+ assert.match(html,/整理意见/);assert.match(html,/需要用户审核/);assert.match(html,/回复草稿 · 1/);assert.match(html,/自动整理已暂停/);
+});
+
+test('item details offer a single-item retry and fold evidence and original content by default',()=>{
+ const item={id:'i',kind:'issue',title:'需审核的条目',handling:'later',version:'v',analyzedVersion:'v',analysis:{summary:'需要用户审核',reason:'LONG TECHNICAL EVIDENCE'},organizationError:{message:'synthetic failure'},autoOrganizationPaused:true};
+ const props={item,root:'items/i',source:{connection:{}},action(){},onReorganize(){},openSession(){}};
+ const html=render(ItemDetailBody,props);
+ assert.match(html,/value="pending" selected="">待处理/);assert.doesNotMatch(html,/value="later"|稍后处理/);
+ assert.match(html,/>重新整理<\/button>/);assert.match(html,/>恢复自动整理<\/button>/);
+ assert.match(html,/<strong>整理错误<\/strong>/);assert.match(html,/synthetic failure/);
+ assert.match(html,/<h3>整理意见<\/h3>/);assert.match(html,/<h3>回复草稿<\/h3>/);
+ assert.match(html,/<details><summary>判断依据与技术细节<\/summary><\/details>/);
+ assert.match(html,/<details><summary>原始内容<\/summary><\/details>/);
+ assert.doesNotMatch(html,/LONG TECHNICAL EVIDENCE|正在加载原文/);
+ const busy=render(ItemDetailBody,{...props,busy:true});
+ assert.match(busy,/<button disabled="" title="此来源正在刷新或整理，请完成后再试。">整理进行中…/);
+ assert.match(busy,/<button disabled="">恢复自动整理/);
+});
+
+test('both visible and dismissed failure reports can open the matching item directly',()=>{
+ const source={id:'s',name:'来源',platform:'github',connection:{ready:true},organizationReportId:'report-1',lastOrganization:{status:'failed',failed:1,errors:[{itemId:'outside-page',title:'不在当前页的内容',message:'synthetic failure'}]}};
+ for(const dismissed of [false,true]){
+  const html=render(SourcePage,{source:{...source,...dismissed?{dismissedOrganizationId:'report-1'}:{}},state:{},action(){},onSelectFailure(){}});
+  assert.match(html,/不在当前页的内容/);assert.match(html,/>查看对应条目 ↗<\/button>/);
+ }
 });
