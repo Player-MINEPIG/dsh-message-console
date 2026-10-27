@@ -14,14 +14,9 @@
 
 ## Quick start
 
-需要 Node.js `^22.19.0 || >=24`、DSH `0.2.1-rc.2`。在同一个 profile 中依次安装并启用 **[Assembler 1.1.3](https://github.com/Player-MINEPIG/dsh-prompt-assembler/releases/tag/v1.1.3) → Jev 0.3.6 → 看点什么**；已有依赖直接复用。安装命令见[安装与账号配置](docs/INSTALLATION.md)。
+需要 DSH `0.2.1` 系列（含 RC 与正式版）。在同一个 profile 中依次安装并启用 **[Assembler 1.1.3](https://github.com/Player-MINEPIG/dsh-prompt-assembler/releases/tag/v1.1.3) → Jev 0.3.6 → 看点什么**；已有依赖直接复用。
 
-1. 从 [Releases](https://github.com/Player-MINEPIG/dsh-message-console/releases) 下载安装包，安装到你的 DSH profile：
-
-   ```sh
-   dsh plugin --profile YOUR_PROFILE add /path/to/dsh-message-console-1.0.0.tgz
-   ```
-
+1. 从 [Releases](https://github.com/Player-MINEPIG/dsh-message-console/releases) 下载安装包。**官方桌面端**在「插件 → 添加插件」中逐个填入包路径，安装后点击「立即启用」。详见 [GUI 安装](docs/INSTALLATION.md#gui-安装官方桌面端与-web)或 [CLI 安装](docs/INSTALLATION.md#cli-安装)。
 2. 打开 DSH 左侧 **看点什么 → 全局配置**，配置模型和平台凭据。
 3. 在 **添加来源** 中选择 GitHub 仓库、B站视频或私信，绑定已有工作区并保存。
 4. 点击 **刷新并整理** 查看新变化；首次采集的历史内容可用 **整理已有数据** 分析。
