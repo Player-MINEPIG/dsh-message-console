@@ -354,3 +354,10 @@ B站 adapter 复用 CookieTransport 与身份检查，临时0600文件验证成�
 dmc_read_item 增加 section=files，按 page/pageSize 返回 filename/status/additions/deletions/changes/patchAvailable；section=file 按 filePath/offset/length 读取对应版本的已存 patch，每次最多32000字符。filePath 仅匹配数据库文件名，不读取服务器路径；未提供 patch 时明确 unavailable。普通工作区及受管会话保留来源访问边界。HTTP 对应 GET /items/:id/files 和 GET /items/:id/content?section=file&filePath=...。
 
 旧 GitHub 会话在 system-prompt/assemble 原生钩子中，将当前上下文内本插件的完整旧输入替换为有界概要。仅真实运行且绑定有效时执行，不影响预览；保留原事件、message ID 和 sourceEventSeqs 派生引用。人工消息和工具记录不重写，后续冷恢复使用同一概要，不重复追加。
+
+
+## 共享插件依赖
+
+Assembler 1.1.3 与 Jev 0.3.6 由用户在同一 profile 依次安装并启用，再安装消息插件。消息插件通过必需的宿主服务 `dshPromptAssembler` 和 `decisionModels` 使用现有实例，不创建内嵌运行时。两者以 optional peer 声明兼容范围，避免 npm 自动安装；缺少服务时由 Cordis 依赖机制等待，不把它们视为可省略的功能。固定开发依赖仅用于隔离测试。
+
+包验收分别检查：单独安装消息插件不会自动安装这两个插件；先安装依赖再安装消息插件时仍解析到原来的共享包，没有私有副本。
