@@ -119,6 +119,8 @@ test('草稿各历史状态保持不动，完成已读待处理项不改变其�
     assert.equal(f.card(id).needsHandling,active);
     assert.equal(f.service.markAllRead({sourceId:f.sources[1].id}).count,3);assert.equal(f.card(id).needsHandling,active);assert.equal(f.store.item(id).readVersion,f.store.item(id).version);
     assert.equal(f.service.markAllHandled({sourceId:f.sources[1].id}).count,active?1:0);assert.equal(f.card(id).needsHandling,false);assert.equal(f.card(id).status,'read');assert.deepEqual(f.service.draft(saved.receipt.draftId),before);
+    f.store.updateDraft(saved.receipt.draftId,{status});assert.equal(f.card(id).needsHandling,false,'保存相同状态不产生新的提醒');
+    f.store.handling(id,'none');f.store.updateDraft(saved.receipt.draftId,{status});assert.equal(f.card(id).needsHandling,false,'无需处理后相同草稿状态不再次提醒');
   });
 });
 

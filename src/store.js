@@ -675,7 +675,7 @@ class Store {
     const data = { ...draft, bodyHash: createHash("sha256").update(json(draft.body)).digest("hex") };
     delete data.body;
     this.#run("INSERT INTO drafts VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data", draft.id, draft.itemId, draft.sourceId, draft.status, draft.body, draft.createdAt ?? (/* @__PURE__ */ new Date()).toISOString(), json(data));
-    if (attentionEvent && (!old || old.status !== draft.status && ["pending-supervision", "ready", "blocked"].includes(draft.status))) this.#advanceAttention(draft.itemId);
+    if (attentionEvent && (!old || old.status !== draft.status && active.includes(draft.status))) this.#advanceAttention(draft.itemId);
   }
   draft(id) {
     const row = this.#get("SELECT * FROM drafts WHERE id=?", id);
