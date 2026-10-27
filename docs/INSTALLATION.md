@@ -12,15 +12,17 @@
 | Jev fork | 0.3.6，[固定提交 `2ec0510`](https://github.com/Player-MINEPIG/dsh-jev-plugin/commit/2ec0510ffcdabe790df8c93b0b40aee07b93c342)，兼容范围 `~0.3.6` |
 | 看点什么 | 1.0.0，使用本次验收的发布包 |
 
-将 `web` 替换为实际 profile 名称，按顺序执行：
+先下载 [Assembler 1.1.3 安装包](https://github.com/Player-MINEPIG/dsh-prompt-assembler/releases/download/v1.1.3/dsh-prompt-assembler-1.1.3.tgz)、[Jev 0.3.6 固定源码包](https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/2ec0510ffcdabe790df8c93b0b40aee07b93c342)和看点什么发布包。将 Jev 下载文件命名为 `dsh-jev-plugin-0.3.6.tgz`。
+
+将 `web` 替换为实际 profile 名称，文件路径替换为下载位置，按顺序执行：
 
 ```sh
-dsh plugin --profile web add https://github.com/Player-MINEPIG/dsh-prompt-assembler/releases/download/v1.1.3/dsh-prompt-assembler-1.1.3.tgz
-dsh plugin --profile web add "dsh-jev-plugin@https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/2ec0510ffcdabe790df8c93b0b40aee07b93c342"
+dsh plugin --profile web add /path/to/dsh-prompt-assembler-1.1.3.tgz
+dsh plugin --profile web add /path/to/dsh-jev-plugin-0.3.6.tgz
 dsh plugin --profile web add /path/to/dsh-message-console-1.0.0.tgz
 ```
 
-也可在 DSH 的 **插件 → 添加插件** 中依次安装。Assembler 使用上面的 `.tgz` 附件直链，具体操作见[上游安装说明](https://github.com/Player-MINEPIG/dsh-prompt-assembler/blob/v1.1.3/docs/INSTALLATION.md)。
+本流程使用本地包逐个安装。DSH `0.2.1-rc.2` 连续使用远程压缩包 URL 安装时，可能在后续步骤遇到 `ERR_PNPM_MISSING_TARBALL_INTEGRITY`；先下载再安装可避免此路径。不要跳过完整性校验。Assembler 的界面操作与共享服务迁移见[上游安装说明](https://github.com/Player-MINEPIG/dsh-prompt-assembler/blob/v1.1.3/docs/INSTALLATION.md)。
 
 本插件通过宿主的 `dshPromptAssembler` 和 `decisionModels` 服务工作，不安装或启动私有 Assembler/Jev 副本。包的 optional peer 声明用于阻止 npm 自动安装；运行时仍必须启用这两个服务。开发依赖仅供仓库测试，安装发布包不会安装这些开发依赖。停用共享服务会使依赖它的插件停止工作。
 
