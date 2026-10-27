@@ -880,7 +880,7 @@ class Store {
       receipt.draft = this.#newDraft(run, submission.body, fresh ? "pending-supervision" : "stale", at, submission.replyToCommentId);
       receipt.result = receipt.draft;
     } else if (submission.kind === "decision") {
-      receipt.result = { choice: submission.choice, certain: submission.certain, reason: submission.reason, ...(submission.importance !== undefined ? { importance: submission.importance } : {}) };
+      receipt.result = { ...(submission.choice !== undefined ? {choice:submission.choice} : {}), certain: submission.certain, reason: submission.reason, ...(submission.importance !== undefined ? { importance: submission.importance } : {}) };
     } else if (submission.kind === "supervision") {
       const draft = required(this.draft(binding.draftId), "草稿");
       if (draft.runId !== run.id || draft.bodyHash !== binding.bodyHash || !["pending-supervision", "ready", "blocked"].includes(draft.status)) throw new Error("监督目标草稿已变化");

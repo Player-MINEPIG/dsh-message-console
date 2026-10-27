@@ -514,7 +514,7 @@ class ConsoleService {
     if (["context", "materials"].includes(section)) {
       const source = run.sourceSnapshot;
       if (!source) return { available: false, reason: "旧运行未保存来源快照" };
-      const stage = binding.role === "supervisor" ? "supervision" : binding.role === "decision-escalation" ? "escalation" : "generation";
+      const stage = binding.role === "supervisor" ? "supervision" : binding.role === "decision-escalation" ? (run.decision?.bypass ? "decision" : "escalation") : "generation";
       const input = assembleInput(source, null, { stage });
       return { version: run.contextVersion, ...input.blocks.find((block) => block.key === section) };
     }
@@ -535,7 +535,7 @@ class ConsoleService {
       if (submission.draftBody !== void 0 && submission.draftBody !== null && typeof submission.draftBody !== "string") throw new Error("草稿正文无效");
     }
     if (submission.kind === "draft" && (typeof submission.body !== "string" || !submission.body.trim())) throw new Error("草稿正文不能为空");
-    if (submission.kind === "decision" && (!["ignore", "draft", "human"].includes(submission.choice) || typeof submission.certain !== "boolean" || typeof submission.reason !== "string")) throw new Error("升级判断格式无效");
+    if (submission.kind === "decision" && ((kind === "private-message" ? submission.choice !== undefined || submission.importance === undefined : !["ignore", "draft", "human"].includes(submission.choice)) || typeof submission.certain !== "boolean" || typeof submission.reason !== "string")) throw new Error("升级判断格式无效");
     if (submission.kind === "decision" && submission.importance !== undefined && (!Number.isInteger(submission.importance) || submission.importance < 0 || submission.importance > 3)) throw new Error("升级重要程度无效");
     if (submission.kind === "supervision" && (typeof submission.approved !== "boolean" || typeof submission.reason !== "string" || !submission.reason.trim())) throw new Error("监督结果无效");
     if (submission.replyToCommentId !== undefined) {
