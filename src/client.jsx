@@ -25,7 +25,7 @@ export function apply(ctx) {
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, inject: () => ({ openSession: id => ctx.uiWorkspace.openSession(id) }) }, ConsoleApp));
 }
 function ConsoleIcon() {
-  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="4"/><path d="M7 9h10M7 13h6M7 17h3"/></svg>;
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="4"/><path d="M7 9h10M7 13h6M7 17h3"/></svg>;
 }
 function useStyles() {
   useEffect(()=>{if(!document.getElementById('dmc-styles')){const style=document.createElement('style');style.id='dmc-styles';style.dataset.plugin='dsh-message-console';style.textContent=styles;document.head.appendChild(style);}},[]);
