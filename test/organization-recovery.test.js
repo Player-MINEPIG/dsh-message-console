@@ -22,6 +22,52 @@ async function fixture(t) {
   return { directory, store, service, source, id, rows, executor, get calls() { return calls; }, succeed() { fail = false; } };
 }
 
+test('manual no-action acknowledges a failure without clearing it or resuming automatic retries', async t => {
+  const f = await fixture(t), original = f.service.item(f.id);
+  await f.service.organizeItem(f.id, { version: original.version });
+  const failure = f.service.item(f.id).organizationError;
+  await f.service.setHandling(f.id, 'none');
+  for (let pass = 0; pass < 2; pass++) {
+    const item = f.service.item(f.id);
+    assert.equal(item.handling, 'none'); assert.equal(item.needsHandling, false);
+    assert.equal(item.attentionAcknowledged, true); assert.equal(item.readVersion, original.readVersion);
+    assert.deepEqual(item.organizationError, failure); assert.equal(item.autoOrganizationPaused, true);
+    assert.equal(f.service.items(f.source.id, { filter: 'handling' }).total, 0);
+    await f.store.close(); await f.store.start();
+  }
+  await f.service.organize(f.source.id); assert.equal(f.calls, 1);
+  await f.service.organizeItem(f.id, { version: original.version });
+  assert.equal(f.service.item(f.id).needsHandling, true);
+});
+
+test('manual no-action acknowledges review until a new analysis requires attention', async t => {
+  const f = await fixture(t); f.succeed();
+  const item = f.service.item(f.id);
+  await f.service.organizeItem(f.id, { version: item.version });
+  await f.service.setHandling(f.id, 'none');
+  assert.equal(f.service.item(f.id).needsHandling, false);
+  assert.equal(f.service.item(f.id).analysis.intervention, 'review');
+  await f.service.organizeItem(f.id, { version: item.version });
+  assert.equal(f.service.item(f.id).needsHandling, true);
+});
+
+test('upgrade repairs an existing manual no-action after failure without dismissing untouched errors', async t => {
+  const f = await fixture(t);
+  for (const item of f.service.items(f.source.id).items) await f.service.organizeItem(item.id, { version: item.version });
+  await f.service.setHandling(f.id, 'none');
+  await f.store.close();
+  const db = new DatabaseSync(join(f.directory, 'console.sqlite'));
+  db.prepare("DELETE FROM meta WHERE key='manual-no-action-v1'").run();
+  db.prepare('UPDATE items SET acknowledged_attention_version=0 WHERE id=?').run(f.id);
+  const error = db.prepare('SELECT data FROM items WHERE id=?').get(f.id).data;
+  db.close(); await f.store.start();
+  assert.equal(f.service.item(f.id).needsHandling, false);
+  assert.equal(f.service.item(f.id).autoOrganizationPaused, true);
+  assert.deepEqual(f.service.item(f.id).organizationError, JSON.parse(error).organizationError);
+  const remaining = f.service.items(f.source.id, { filter: 'handling' });
+  assert.equal(remaining.total, 1); assert.notEqual(remaining.items[0].id, f.id);
+});
+
 test('failed item becomes actionable, pauses across fetches/restarts, and only explicit retry resumes it', async t => {
   const f = await fixture(t);
   let item = f.service.item(f.id);
