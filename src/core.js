@@ -86,6 +86,9 @@ class ConsoleService {
   comments(id, version, query) {
     return this.store.comments(id, version, query);
   }
+  files(id, version, query) {
+    return this.store.files(id, version, query);
+  }
   changedComments(id, query) {
     return this.store.changedComments(id, query);
   }
@@ -293,8 +296,20 @@ class ConsoleService {
     this.store.markRead(id, version);
   }
   async setHandling(id, handling) {
-    if (!["none", "pending", "later", "done"].includes(handling)) throw new Error("处理状态无效");
+    if (!["none", "pending", "done"].includes(handling)) throw new Error("处理状态无效");
     this.store.handling(id, handling);
+  }
+  setAutomation(id, { paused } = {}) {
+    if (typeof paused !== 'boolean') throw new Error('需要指定是否暂停自动整理');
+    const item = required(this.store.header(id), '内容项');
+    if (this.#jobs.has(`source:${item.sourceId}`)) throw new Error('此来源正在刷新或整理，请完成后再试。');
+    if (!paused && item.organizationError) throw new Error('此项整理失败，请使用重新整理；成功后恢复自动整理。');
+    return this.store.setAutomation(id, paused);
+  }
+  organizeItem(id, { version } = {}) {
+    const item = required(this.store.header(id), '内容项');
+    if (!version || version !== item.version) throw new Error('内容已更新，请刷新后重新整理');
+    return this.#job(`source:${item.sourceId}`, () => this.#organize(item.sourceId, { scope: 'item', trigger: 'manual', itemId: id, version }), { busyMessage: '此来源正在刷新或整理，请完成后再试。' });
   }
   #job(key, work, { busyMessage } = {}) {
     if (this.#closed) return Promise.reject(new Error("插件已停止"));
@@ -348,6 +363,7 @@ class ConsoleService {
       sourceContextVersion: source.contextVersion,
       workspaceId: source.workspaceId,
       baseAnalysisRevision: item.analysisRevision ?? 0,
+      automationRevision: item.automationRevision ?? 0,
       inputSnapshot: { changedAt: item.changedAt, previous: item.previous },
       settingsSnapshot: valuesOf(resolveSettings(this.store.settings(), source, this.parameters)),
       status: kind === "human" ? "open" : "running",
@@ -359,7 +375,7 @@ class ConsoleService {
   #newRun(source, item, prepared, kind = "automatic") {
     return this.store.createRun(this.#runRecord(source, item, prepared, kind));
   }
-  async #organize(sourceId, { scope, trigger }) {
+  async #organize(sourceId, { scope, trigger, itemId, version }) {
     const source = required(this.store.source(sourceId), "来源"), settings = valuesOf(resolveSettings(this.store.settings(), source, this.parameters));
     let prepared, preparationError;
     try {
@@ -367,13 +383,14 @@ class ConsoleService {
     } catch (error) {
       preparationError = error;
     }
-    const { total, refs, unanalysed, excludedClosed } = this.store.candidates(sourceId, scope), summary = { id: randomUUID(), sourceId, scope, trigger, contextVersion: prepared?.contextVersion ?? source.contextVersion, startedAt: nowISO(this.clock), total, excludedClosed, candidates: refs.length, completed: 0, failed: 0, skipped: 0, errors: [] };
+    if (itemId && this.store.header(itemId).version !== version) throw new Error('内容已更新，请刷新后重新整理');
+    const { total, refs, unanalysed, excludedClosed, paused } = itemId ? { total: 1, refs: [{ id: itemId, version }], unanalysed: 0, excludedClosed: 0, paused: 0 } : this.store.candidates(sourceId, scope), summary = { id: randomUUID(), sourceId, scope, trigger, contextVersion: prepared?.contextVersion ?? source.contextVersion, startedAt: nowISO(this.clock), total, excludedClosed, paused, candidates: refs.length, completed: 0, failed: 0, skipped: 0, errors: [] };
     for (const ref of refs) {
       if (this.#closed) break;
       const item = required(this.store.item(ref.id), "内容项");
       if (item.version !== ref.version) continue;
       const triggerReason = { ...this.store.organizationReason(item.id, { initial: scope === 'history' && !item.analysis, checkRetry: true }), previousConclusion: item.kind === 'comment' ? conclusion(item.analysis) : null };
-      const run = this.store.createRun({ ...this.#runRecord(source, item, prepared), trigger, triggerReason }), controller = new AbortController();
+      const run = this.store.createRun({ ...this.#runRecord(source, item, prepared), trigger, triggerReason, ...(itemId ? { resumeAutomation: true } : {}) }), controller = new AbortController();
       this.#aborts.add(controller);
       try {
         if (preparationError) throw preparationError;
@@ -412,7 +429,7 @@ class ConsoleService {
     summary.finishedAt = nowISO(this.clock);
     summary.status = summary.failed ? summary.completed ? "partial" : "failed" : summary.completed ? "completed" : "skipped";
     summary.reason = null;
-    if (!refs.length) summary.reason = !total ? "还没有已采集的内容，请先刷新来源。" : scope === "changes" && unanalysed ? "没有待整理的新变化。首次基线仅在手动整理已有数据时处理。" : "当前内容均已整理，无需重复运行。新指导用于后续内容。";
+    if (!refs.length) summary.reason = !total ? "还没有已采集的内容，请先刷新来源。" : paused ? `${paused} 项已暂停自动整理，请进入条目查看错误或主动重新整理。其余内容没有待整理的变化。` : scope === "changes" && unanalysed ? "没有待整理的新变化。首次基线仅在手动整理已有数据时处理。" : "当前内容均已整理，无需重复运行。新指导用于后续内容。";
     else if (summary.completed + summary.failed < refs.length) summary.reason = "部分候选项在整理期间已变化或插件已停止，本轮跳过，可稍后重试。";
     summary.errorsTruncated = summary.failed > summary.errors.length;
     this.store.updateSource(sourceId, { organizedAt: summary.finishedAt, lastOrganization: summary });
@@ -492,7 +509,8 @@ class ConsoleService {
     const version = item.version;
     if (section === "item") return item;
     if (section === "comments") return this.store.comments(itemId, version, args);
-    if (["body", "comment", "diff", "video-description"].includes(section)) return this.store.content(itemId, { ...args, version });
+    if (section === "files") return this.store.files(itemId, version, args);
+    if (["body", "comment", "diff", "video-description", "file"].includes(section)) return this.store.content(itemId, { ...args, version });
     if (["context", "materials"].includes(section)) {
       const source = run.sourceSnapshot;
       if (!source) return { available: false, reason: "旧运行未保存来源快照" };
@@ -609,7 +627,8 @@ class ConsoleService {
       return { version: prepared.contextVersion, contextVersion: prepared.contextVersion, ...input.blocks.find(block => block.key === section) };
     }
     if (section === "comments") return this.store.comments(item.id, item.version, args);
-    if (["body", "comment", "diff", "video-description"].includes(section)) return this.store.content(item.id, { ...args, version: item.version });
+    if (section === "files") return this.store.files(item.id, item.version, args);
+    if (["body", "comment", "diff", "video-description", "file"].includes(section)) return this.store.content(item.id, { ...args, version: item.version });
     throw new Error("查询区段无效");
   }
   async #submitFromWorkspace(actor, submission) {

@@ -7,7 +7,7 @@ export function needsHandling(item, drafts = []) {
   if (['pending', 'later'].includes(item.handling)) return true;
   if (drafts.some(draft => draft.itemId === item.id && activeDraft(draft))) return true;
   if (item.handling === 'done') return false;
-  return currentAnalysis(item)?.intervention === 'human';
+  return Boolean(item.organizationError) || ['human', 'review'].includes(currentAnalysis(item)?.intervention);
 }
 export function itemStatus(item,drafts=[]) {
   return needsHandling(item,drafts)?'handling':item.readVersion!==item.version?'unread':'read';

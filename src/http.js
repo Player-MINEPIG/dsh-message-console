@@ -47,6 +47,7 @@ function createHandler(service, admission) {
           else if (path[2] === "content") result2 = service.content(path[1], query);
           else if (path[2] === "changes") result2 = service.changedComments(path[1], query);
           else if (path[2] === "comments") result2 = service.comments(path[1], query.version, query);
+          else if (path[2] === "files") result2 = service.files(path[1], query.version, query);
           else if (["runs", "drafts", "versions"].includes(path[2])) result2 = service[path[2]](path[1], query);
           else return send(404, { error: "路径不存在" });
         } else if (path[0] === "runs" && path[2] === "decision" && path.length === 3) result2 = service.decision(path[1]);
@@ -76,6 +77,8 @@ function createHandler(service, admission) {
       else if (path[0] === "items" && path[2] === "feedback" && path.length === 3) result = service.saveFeedback(path[1], body);
       else if (path[0] === "items" && path[2] === "read" && path.length === 3) await service.markRead(path[1], body.version);
       else if (path[0] === "items" && path[2] === "handling" && path.length === 3) await service.setHandling(path[1], body.handling);
+      else if (path[0] === "items" && path[2] === "automation" && path.length === 3) result = service.setAutomation(path[1], body);
+      else if (path[0] === "items" && path[2] === "organize" && path.length === 3) result = await service.organizeItem(path[1], body);
       else if (path[0] === "items" && path[2] === "conversation" && path.length === 3) result = await service.openConversation(path[1]);
       else if (path[0] === "drafts" && path[2] === "publish" && path.length === 3) result = await service.approveAndPublish(path[1], body);
       else if (path[0] === "drafts" && path[2] === "dismiss" && path.length === 3) await service.dismissDraft(path[1]);

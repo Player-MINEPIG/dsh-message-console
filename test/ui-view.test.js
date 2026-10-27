@@ -235,7 +235,7 @@ test('item details offer a single-item retry and fold evidence and original cont
  assert.doesNotMatch(html,/LONG TECHNICAL EVIDENCE|正在加载原文/);
  const busy=render(ItemDetailBody,{...props,busy:true});
  assert.match(busy,/<button disabled="" title="此来源正在刷新或整理，请完成后再试。">整理进行中…/);
- assert.match(busy,/<button disabled="">恢复自动整理/);
+ assert.match(busy,/<button disabled=""[^>]*>恢复自动整理/);
 });
 
 test('both visible and dismissed failure reports can open the matching item directly',()=>{

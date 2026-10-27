@@ -193,6 +193,16 @@ class Store {
           const run = this.run(row.id);
           this.#writeRun({ ...run, status: "interrupted", error: "进程中断；已发生的会话工作可追溯。" });
           this.#eligibleRun(row.id);
+          this.#recordOrganizationFailure(this.run(row.id), { preserveHandled: true });
+        }
+        if (!this.#get("SELECT value FROM meta WHERE key='organization-recovery-v1'")) {
+          for (const row of this.#all("SELECT id FROM items")) {
+            const latest = this.#get("SELECT data FROM runs WHERE item_id=? AND coalesce(json_extract(data,'$.kind'),'automatic')='automatic' ORDER BY started_at DESC,rowid DESC LIMIT 1", row.id);
+            if (latest) this.#recordOrganizationFailure(parse(latest.data), { preserveHandled: true });
+            this.#run("UPDATE items SET handling='pending' WHERE id=? AND (handling='later' OR (handling='none' AND attention_version<>acknowledged_attention_version AND analyzed_version=version AND json_extract(analysis,'$.intervention')='review'))", row.id);
+            this.#project(row.id);
+          }
+          this.#run("INSERT INTO meta VALUES('organization-recovery-v1','1')");
         }
       });
       for (const suffix of ["-wal", "-shm"]) await chmod(filename + suffix, 384).catch((e) => {
@@ -339,12 +349,12 @@ class Store {
   }
   #advanceAttention(id) {
     const item = this.#itemState(required(this.#itemRow(id), "内容项"));
-    const handling = item.handling === "done" ? currentAnalysis(item)?.intervention === "human" ? "pending" : "none" : item.handling;
+    const handling = item.handling === "done" ? ['human', 'review'].includes(currentAnalysis(item)?.intervention) ? "pending" : "none" : item.handling;
     this.#run("UPDATE items SET attention_version=attention_version+1,handling=? WHERE id=?", handling, id);
   }
   #project(id) {
     const row = required(this.#itemRow(id), "内容项"), item = this.#itemState(row), drafts = this.#all(`SELECT status,item_id FROM drafts WHERE item_id=? AND status IN (${active.map(() => "?").join(",")})`, id, ...active).map((d) => ({ itemId: d.item_id, status: d.status }));
-    const handling = Number(needsHandling(item, drafts)), unread = Number(item.readVersion !== item.version), analyzed = Number(Boolean(currentAnalysis(item))), priority = item.attentionAcknowledged ? 0 : itemPriority(item);
+    const handling = Number(needsHandling(item, drafts)), unread = Number(item.readVersion !== item.version), analyzed = Number(!item.organizationError && Boolean(currentAnalysis(item))), priority = item.attentionAcknowledged ? 0 : itemPriority(item);
     this.#run("UPDATE items SET priority=?,needs_handling=?,unread=?,analyzed=? WHERE id=?", priority, handling, unread, analyzed, id);
     this.#run("UPDATE sources SET total=total+?,unread=unread+?,handling=handling+?,analyzed=analyzed+?,unorganized=unorganized+? WHERE id=?", 0, unread - row.unread, handling - row.needs_handling, analyzed - row.analyzed, unread * (1 - analyzed) - row.unread * (1 - row.analyzed), row.source_id);
   }
@@ -392,9 +402,19 @@ class Store {
   }
   handling(id, handling) {
     return this.#transaction(() => {
-      required(this.#itemRow(id), "内容项");
+      const data = parse(required(this.#itemRow(id), "内容项").data);
+      this.#run('UPDATE items SET data=? WHERE id=?', json({ ...data, handlingRevision: (data.handlingRevision ?? 0) + 1 }), id);
       this.#run("UPDATE items SET handling=?,acknowledged_attention_version=CASE WHEN ?='done' THEN attention_version ELSE acknowledged_attention_version END,attention_version=attention_version+? WHERE id=?", handling, handling, ["pending", "later"].includes(handling) ? 1 : 0, id);
       this.#project(id);
+    });
+  }
+  setAutomation(id, paused) {
+    return this.#transaction(() => {
+      const row = required(this.#itemRow(id), '内容项'), data = parse(row.data);
+      this.#run("UPDATE items SET data=? WHERE id=?", json({ ...data, autoOrganizationPaused: paused, automationRevision: (data.automationRevision ?? 0) + 1 }), id);
+      this.#audit('item.automation', { itemId: id, paused });
+      this.#project(id);
+      return this.header(id);
     });
   }
   #bulkRows(sourceId, platform, handlingOnly = false) {
@@ -434,6 +454,7 @@ class Store {
   #card(row) {
     const item = this.#itemState(row), payload = { ...parse(row.payload), ...row.remote_state ? { state: row.remote_state } : {}, ...row.remote_merged !== void 0 && row.remote_merged !== null ? { merged: Boolean(row.remote_merged) } : {} };
     item.organization = this.#organization(item);
+    item.draftCount = this.#get("SELECT count(*) n FROM drafts WHERE item_id=? AND status NOT IN ('superseded','dismissed')", item.id).n;
     return { ...item, updatedAt: row.updated_at ?? remoteTime(item.updatedAt) ?? item.changedAt, title: row.title, url: row.url, analysis: currentAnalysis(item), priority: row.priority, needsHandling: Boolean(row.needs_handling), status: row.needs_handling ? "handling" : row.unread ? "unread" : "read", excerpt: row.excerpt, payload: { ...(payload?.images?.length ? { images: payload.images } : {}), ...payload?.state ? { state: payload.state } : {}, ...payload?.merged !== void 0 ? { merged: payload.merged } : {}, ...payload?.contextComplete !== void 0 ? { contextComplete: payload.contextComplete } : {}, ...payload?.contextLimit ? { contextLimit: payload.contextLimit } : {}, ...payload?.video ? { video: payload.video } : {}, ...(payload?.contact ? {contact:payload.contact,collection:payload.collection,visibilityLimit:payload.visibilityLimit} : {}) } };
   }
   items(sourceId, input = {}) {
@@ -471,12 +492,28 @@ class Store {
       : this.#get("SELECT json_extract(data,'$.images') images FROM comments WHERE item_id=? AND version=? AND id=?", id, version, String(commentId));
     return required(parse(row?.images)?.[number], '图片');
   }
-  content(id, { version, section = "body", commentId, offset = 0, length = 16e3 } = {}) {
+  files(id, version, input = {}) {
+    const item = required(this.#itemRow(id), '内容项');
+    if (item.kind !== 'pr') throw new Error('只有 PR 有文件变更');
+    version ??= item.version;
+    required(this.#get('SELECT 1 FROM item_versions WHERE item_id=? AND version=?', id, version), '内容版本');
+    const from = "FROM item_versions v,json_each(v.payload,'$.files') f WHERE v.item_id=? AND v.version=?";
+    const page = this.#page(`SELECT count(*) n ${from}`, `SELECT coalesce(json_extract(f.value,'$.path'),json_extract(f.value,'$.filename')) filename,json_extract(f.value,'$.status') status,json_extract(f.value,'$.additions') additions,json_extract(f.value,'$.deletions') deletions,json_extract(f.value,'$.changes') changes,json_type(f.value,'$.patch')='text' patchAvailable ${from} ORDER BY CAST(f.key AS INTEGER) LIMIT ? OFFSET ?`, [id, version], input);
+    return { ...page, version, items: page.items.map(file => ({ ...file, patchAvailable: Boolean(file.patchAvailable) })) };
+  }
+  content(id, { version, section = "body", commentId, filePath, offset = 0, length = 16e3 } = {}) {
     const item = required(this.#itemRow(id), "内容项");
     version ??= item.version;
     offset = Number(offset);
     length = Number(length);
-    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > 32e3 || !["body", "comment", "diff", "video-description"].includes(section)) throw new Error("内容区段参数无效");
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > 32e3 || !["body", "comment", "diff", "video-description", "file"].includes(section)) throw new Error("内容区段参数无效");
+    if (section === 'file') {
+      if (item.kind !== 'pr' || typeof filePath !== 'string' || !filePath || filePath.length > 4096) throw new Error('需要有效 PR 文件路径');
+      const row = required(this.#get("SELECT json_type(f.value,'$.patch')='text' available,substr(json_extract(f.value,'$.patch'),?,?) text,length(json_extract(f.value,'$.patch')) total FROM item_versions v,json_each(v.payload,'$.files') f WHERE v.item_id=? AND v.version=? AND coalesce(json_extract(f.value,'$.path'),json_extract(f.value,'$.filename'))=?", offset + 1, length, id, version, filePath), '已采集文件');
+      if (!row.available) return { version, filePath, available: false, reason: '平台未提供该文件的文本 patch；不能据此声称已经审阅。' };
+      const next = offset + Array.from(row.text).length;
+      return { version, filePath, available: true, text: row.text, offset, nextOffset: next < row.total ? next : null, total: row.total, complete: next >= row.total };
+    }
     const column = section === "comment" && item.kind === "private-message" ? "body || CASE WHEN json_extract(data,'$.type')<>1 AND json_extract(data,'$.rawContent') IS NOT NULL THEN char(10)||'平台原始字段（仅文字元信息，未加载媒体）：'||char(10)||json_extract(data,'$.rawContent') ELSE '' END" : section === "diff" ? "json_extract(payload,'$.diff')" : section === "video-description" ? "json_extract(payload,'$.video.description')" : "body";
     const from = section === "comment" ? "comments" : "item_versions";
     const where = section === "comment" ? "item_id=? AND version=? AND id=?" : "item_id=? AND version=?";
@@ -508,8 +545,8 @@ class Store {
   }
   candidates(sourceId, scope) {
     const total = this.#get("SELECT count(*) n FROM items WHERE source_id=?", sourceId).n;
-    const refs = this.#all(`SELECT id,version FROM items WHERE source_id=? AND (analyzed_version IS NOT version ${scope === "history" ? "OR analysis IS NULL" : ""}) ORDER BY id`, sourceId);
-    return { total, refs, excludedClosed: 0, unanalysed: this.#get("SELECT count(*) n FROM items WHERE source_id=? AND analysis IS NULL", sourceId).n };
+    const refs = this.#all(`SELECT id,version FROM items WHERE source_id=? AND coalesce(json_extract(data,'$.autoOrganizationPaused'),0)=0 AND (analyzed_version IS NOT version ${scope === "history" ? "OR analysis IS NULL" : ""}) ORDER BY id`, sourceId);
+    return { total, refs, excludedClosed: 0, paused: this.#get("SELECT count(*) n FROM items WHERE source_id=? AND json_extract(data,'$.autoOrganizationPaused')=1", sourceId).n, unanalysed: this.#get("SELECT count(*) n FROM items WHERE source_id=? AND analysis IS NULL", sourceId).n };
   }
   organizationReason(id, { version, baseVersion, initial = false, checkRetry = false } = {}) {
     const item = required(this.#itemRow(id), '内容项');
@@ -587,9 +624,28 @@ class Store {
   }
   updateRun(id, change) {
     return this.#transaction(() => {
-      this.#writeRun({ ...required(this.run(id), "运行记录"), ...change });
+      const run = { ...required(this.run(id), "运行记录"), ...change };
+      this.#writeRun(run);
+      this.#recordOrganizationFailure(run);
       if (change.status && change.status !== "running") this.#eligibleRun(id);
     });
+  }
+  #recordOrganizationFailure(run, { preserveHandled = false } = {}) {
+    if ((run.kind ?? 'automatic') !== 'automatic' || !['failed', 'interrupted'].includes(run.status) || run.resultAdopted) return;
+    const row = this.#itemRow(run.itemId);
+    if (!row || row.version !== run.version) return;
+    if (Number.isInteger(run.baseAnalysisRevision) && row.analysis_revision > run.baseAnalysisRevision) return;
+    const data = parse(row.data);
+    if (data.organizationError?.runId === run.id) return;
+    const startedAt = run.startedAt ?? this.#get('SELECT started_at FROM runs WHERE id=?', run.id).started_at;
+    const newer = this.#get("SELECT 1 FROM runs WHERE item_id=? AND (coalesce(json_extract(data,'$.kind'),'automatic')='automatic' OR json_extract(data,'$.resultAdopted')=1) AND (started_at>? OR (started_at=? AND rowid>(SELECT rowid FROM runs WHERE id=?))) LIMIT 1", run.itemId, startedAt, startedAt, run.id);
+    if (newer) return;
+    const handlingRevision = data.handlingRevision ?? 0;
+    const previousHandling = row.handling === 'pending' && data.organizationError?.handlingRevision === handlingRevision ? data.organizationError.previousHandling : row.handling;
+    const organizationError = { runId: run.id, version: run.version, message: run.error ?? '整理被中断，请查看工作记录。', at: run.finishedAt ?? startedAt, previousHandling, handlingRevision };
+    const handled = preserveHandled && row.handling === 'done';
+    this.#run("UPDATE items SET data=?,handling=?,attention_version=attention_version+? WHERE id=?", json({ ...data, organizationError, autoOrganizationPaused: true }), handled ? 'done' : 'pending', handled ? 0 : 1, run.itemId);
+    this.#project(run.itemId);
   }
   runs(id, input = {}) {
     required(this.#itemRow(id), "内容项");
@@ -741,7 +797,14 @@ class Store {
     const row = required(this.#itemRow(run.itemId), "内容项"), source = this.source(row.source_id);
     const valid = row.version === run.version && source.contextVersion === run.sourceContextVersion && source.workspaceId === run.workspaceId && row.analysis_revision === (run.baseAnalysisRevision ?? row.analysis_revision);
     if (valid) {
-      this.#run("UPDATE items SET analysis=?,analyzed_version=?,context_version=?,analysis_revision=analysis_revision+1,handling=CASE WHEN handling='none' AND ?='human' THEN 'pending' ELSE handling END WHERE id=?", json(result), run.version, run.contextVersion, result.intervention ?? "none", run.itemId);
+      const data = parse(row.data);
+      const recovered = data.organizationError && (run.id === data.organizationError.runId || run.resumeAutomation);
+      const resume = recovered || run.resumeAutomation;
+      const automation = resume && (data.automationRevision ?? 0) === (run.automationRevision ?? 0) ? { autoOrganizationPaused: false } : {};
+      let handling = row.handling;
+      if (handling === 'pending' && data.organizationError?.handlingRevision === (data.handlingRevision ?? 0)) handling = ['pending', 'later'].includes(data.organizationError.previousHandling) ? 'pending' : 'none';
+      if (handling === 'none' && ['human', 'review'].includes(result.intervention)) handling = 'pending';
+      this.#run("UPDATE items SET data=?,analysis=?,analyzed_version=?,context_version=?,analysis_revision=analysis_revision+1,handling=? WHERE id=?", json({ ...data, organizationError: null, ...automation }), json(result), run.version, run.contextVersion, handling, run.itemId);
       this.#advanceAttention(run.itemId);
       const closedGitHub = source.platform === 'github' && ['issue', 'pr'].includes(row.kind) && this.#get("SELECT 1 FROM item_versions WHERE item_id=? AND version=? AND (lower(json_extract(payload,'$.state')) IN ('closed','merged') OR json_extract(payload,'$.merged')=1)", row.id, row.version);
       if (result.intervention === "none" && (row.kind === "comment" && conclusion(result) === "ignore" || closedGitHub)) this.#settleNoAction(run.itemId);
