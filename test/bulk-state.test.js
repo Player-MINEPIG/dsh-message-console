@@ -134,13 +134,13 @@ test('B站无需回复清除旧待处理和待审草稿，保留未读与历史�
   assert.equal(f.service.items(source.id,{filter:'handling'}).total,0);
   f.adopt(id,human);assert.equal(f.card(id).needsHandling,true);
 });
-test('无需回复保留发送中和结果不明草稿的核实提醒，GitHub处理状态不受影响',async t=>{
+test('无需回复保留发送中和结果不明草稿的核实提醒，GitHub无需介入清除旧待处理',async t=>{
   const f=await fixture(t,1);
   for(const status of ['sending','unknown']){
     const id=f.all(f.sources[1])[0].id,{receipt}=await f.draft(id);f.store.updateDraft(receipt.draftId,{status});f.adopt(id,ignore);
     assert.equal(f.card(id).needsHandling,true);assert.equal(f.store.draft(receipt.draftId).status,status);
   }
-  const id=f.all(f.sources[0])[0].id;f.adopt(id,human);f.adopt(id,ignore);assert.equal(f.card(id).needsHandling,true);
+  const id=f.all(f.sources[0])[0].id;f.adopt(id,human);f.adopt(id,ignore);assert.equal(f.card(id).needsHandling,false);
 });
 test('过期无需回复不能清理新版本状态；升级只修复当前有效的旧结论一次',async t=>{
   const f=await fixture(t,1),source=f.sources[1],id=f.all(source)[0].id;

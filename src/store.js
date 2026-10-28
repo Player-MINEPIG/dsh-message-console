@@ -213,6 +213,16 @@ class Store {
           }
           this.#run("INSERT INTO meta VALUES('manual-no-action-v1','1')");
         }
+        if (!this.#get("SELECT value FROM meta WHERE key='github-no-action-settled-v1'")) {
+          for (const row of this.#all(`SELECT i.id FROM items i JOIN sources s ON s.id=i.source_id
+            WHERE json_extract(s.data,'$.platform')='github' AND i.kind IN ('issue','pr')
+            AND i.handling IN ('pending','later') AND i.analyzed_version=i.version
+            AND json_extract(i.analysis,'$.intervention')='none'
+            AND json_extract(i.data,'$.organizationError') IS NULL
+            AND coalesce(json_extract(i.data,'$.handlingRevision'),0)=0
+            AND NOT EXISTS (SELECT 1 FROM drafts WHERE item_id=i.id AND status IN ('pending-supervision','ready','blocked','stale','sending','unknown'))`)) this.#settleNoAction(row.id);
+          this.#run("INSERT INTO meta VALUES('github-no-action-settled-v1','1')");
+        }
       });
       for (const suffix of ["-wal", "-shm"]) await chmod(filename + suffix, 384).catch((e) => {
         if (e.code !== "ENOENT") throw e;
@@ -815,8 +825,8 @@ class Store {
       if (handling === 'none' && ['human', 'review'].includes(result.intervention)) handling = 'pending';
       this.#run("UPDATE items SET data=?,analysis=?,analyzed_version=?,context_version=?,analysis_revision=analysis_revision+1,handling=? WHERE id=?", json({ ...data, organizationError: null, ...automation }), json(result), run.version, run.contextVersion, handling, run.itemId);
       this.#advanceAttention(run.itemId);
-      const closedGitHub = source.platform === 'github' && ['issue', 'pr'].includes(row.kind) && this.#get("SELECT 1 FROM item_versions WHERE item_id=? AND version=? AND (lower(json_extract(payload,'$.state')) IN ('closed','merged') OR json_extract(payload,'$.merged')=1)", row.id, row.version);
-      if (result.intervention === "none" && (row.kind === "comment" && conclusion(result) === "ignore" || closedGitHub)) this.#settleNoAction(run.itemId);
+      const gitHubReview = source.platform === 'github' && ['issue', 'pr'].includes(row.kind);
+      if (result.intervention === "none" && (row.kind === "comment" && conclusion(result) === "ignore" || gitHubReview)) this.#settleNoAction(run.itemId);
       this.#project(run.itemId);
     }
     return valid;
