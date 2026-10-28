@@ -148,7 +148,7 @@ test('PR files are paged without patches and a named patch is read in bounded Un
   assert.throws(() => f.service.content(f.id, { section: 'file', filePath: 'a.js', length: 32001 }), /参数无效/);
 });
 
-test('successful no-action retry clears error-owned pending but preserves a user-selected pending state', async t => {
+test('successful GitHub no-action retry clears both error-owned and previously user-selected pending states', async t => {
   const f = await fixture(t), item = f.service.item(f.id);
   await f.service.organizeItem(f.id, { version: item.version });
   f.executor.analyze = async () => ({ ...analysis, intervention: 'none', importance: 0 });
@@ -159,7 +159,7 @@ test('successful no-action retry clears error-owned pending but preserves a user
   await f.service.setHandling(f.id, 'pending');
   f.executor.analyze = async () => ({ ...analysis, intervention: 'none', importance: 0 });
   await f.service.organizeItem(f.id, { version: item.version });
-  assert.equal(f.service.item(f.id).handling, 'pending'); assert.equal(f.service.item(f.id).needsHandling, true);
+  assert.equal(f.service.item(f.id).handling, 'none'); assert.equal(f.service.item(f.id).needsHandling, false);
 });
 
 test('migration never resurrects a failure after a later adopted analysis revision', async t => {
