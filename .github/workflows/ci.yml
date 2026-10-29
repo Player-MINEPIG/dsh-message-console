@@ -86,6 +86,30 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
+  verification_status:
+    name: Record verified Linux status
+    needs: linux
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'verify' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      statuses: write
+    steps:
+      - name: Record successful fixed-candidate verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERIFIED_SHA: ${{ github.sha }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          VERIFICATION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/dev
+          test "$VERIFIED_SHA" = "$CANDIDATE_SHA"
+          gh api "repos/$GH_REPO/statuses/$VERIFIED_SHA" \
+            -f state=success -f context=Linux \
+            -f description='Full Linux tests and original package verification passed' \
+            -f target_url="$VERIFICATION_URL"
+
   promote:
     name: Promote main
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'promote' }}
