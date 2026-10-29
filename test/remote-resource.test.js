@@ -14,7 +14,7 @@ const compiled = await build({
         export const useState = (...args) => globalThis.remoteResourceHooks.useState(...args);
         export const useRef = (...args) => globalThis.remoteResourceHooks.useRef(...args);
         export const useEffect = (...args) => globalThis.remoteResourceHooks.useEffect(...args);
-        export const useCallback = callback => callback;
+        export const useCallback = (...args) => globalThis.remoteResourceHooks.useCallback(...args);
       ` }));
     },
   }],
@@ -37,6 +37,11 @@ function fixture(t, path = 'learning?page=1', options = { pollMs: 3000 }) {
     useRef(initial) {
       const slot = index++;
       return slots[slot] ??= { current: initial };
+    },
+    useCallback(callback, dependencies) {
+      const slot = index++, previous = slots[slot];
+      if (!previous || dependencies.some((value, i) => !Object.is(value, previous.dependencies[i]))) slots[slot] = { callback, dependencies };
+      return slots[slot].callback;
     },
     useEffect(effect, dependencies) {
       const slot = index++, previous = slots[slot];
@@ -122,4 +127,33 @@ test('unmount clears the next poll after a successful request', async t => {
   t.mock.timers.tick(9000);
   assert.equal(f.calls.length, 1);
   assert.equal(f.writesAfterUnmount(), 0);
+});
+
+test('retry is stable, retains displayed data and cancels the replaced request', async t => {
+  const f = fixture(t), history = { items: [{ id: 'saved' }] }, retry = f.render().retry;
+  assert.equal(typeof retry, 'function');
+  f.calls[0].resolve(history); await flush();
+  assert.equal(f.render().retry, retry);
+  t.mock.timers.tick(3000);
+  retry(); f.render();
+  assert.equal(f.calls[1].signal.aborted, true);
+  assert.equal(f.calls.length, 3);
+  assert.deepEqual(f.render().data, history);
+  f.calls[1].resolve({ items: [{ id: 'stale' }] }); await flush();
+  assert.deepEqual(f.render().data, history);
+  f.calls[2].resolve({ items: [{ id: 'fresh' }] }); await flush();
+  assert.equal(f.render().data.items[0].id, 'fresh');
+});
+
+test('a resource without polling can retry a failed initial load', async t => {
+  const f = fixture(t, 'items/one/feedback', { pollMs: 0 });
+  f.calls[0].reject(new Error('暂时不可用')); await flush();
+  assert.equal(f.render().loading, false);
+  f.render().retry(); f.render();
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.render().loading, true);
+  assert.equal(f.render().error, '');
+  f.calls[1].resolve({ text: '已保存评价' }); await flush();
+  assert.equal(f.render().data.text, '已保存评价');
+  t.mock.timers.tick(9000); assert.equal(f.calls.length, 2);
 });
