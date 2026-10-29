@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { request } from './api.js';
 import { ModelSettingField } from './model-selector.jsx';
 export const labels = { github: 'GitHub', bilibili: '哔哩哔哩', issue: 'Issue', pr: 'Pull request', comment: '评论对话', 'private-message':'私信对话', release: 'Release', 'pending-supervision': '等待独立监督', superseded: '已被新稿替换', ready: '等待你审核', blocked: '监督已拦截', stale: '上下文已变化', sent: '已发布', sending: '发送中', unknown: '结果待核实', dismissed: '暂不发布', none: '无需处理', pending: '待处理', later: '待处理', done: '已处理' };
@@ -54,6 +54,8 @@ export function moveEntry(items,index,direction) {
 
 export function useRemoteResource(path, { revision = 0, pollMs = 0 } = {}) {
   const [resource, setResource] = useState({ path, data: null, error: '', loading: Boolean(path) });
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => setAttempt(value => value + 1), []);
   const generation = useRef(0);
   useEffect(() => {
     const current = ++generation.current;
@@ -73,8 +75,8 @@ export function useRemoteResource(path, { revision = 0, pollMs = 0 } = {}) {
     };
     void pull();
     return () => { generation.current++; controller.abort(); if (timer !== null) clearTimeout(timer); };
-  }, [path, revision, pollMs]);
-  return resource.path === path ? resource : { data: null, error: '', loading: Boolean(path) };
+  }, [path, revision, pollMs, attempt]);
+  return { ...(resource.path === path ? resource : { data: null, error: '', loading: Boolean(path) }), retry };
 }
 export function ResourceError({error}) { return error ? <p className="dmc-error" role="alert">{error}</p> : null; }
 export function ListPagination({pagination,pageSize,onPage,onPageSize,label='内容分页'}) {

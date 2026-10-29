@@ -2,7 +2,7 @@
 
 面向个人的 DSH 消息聚合插件，在一个入口查看 GitHub 与 B站的变化、分析结果和待处理事项。
 
-**版本：1.0.0** · [发布说明](docs/releases/v1.0.0.md) · [宣传视频（B站）](https://www.bilibili.com/video/BV1cpxc6qEuH/)
+**版本：1.0.1** · [发布说明](docs/releases/v1.0.1.md) · [宣传视频（B站）](https://www.bilibili.com/video/BV1cpxc6qEuH/)
 
 ## 主要功能
 
@@ -20,7 +20,7 @@
 | --- | --- | --- |
 | 1. Assembler 1.1.3 | [dsh-prompt-assembler](https://github.com/Player-MINEPIG/dsh-prompt-assembler) | [下载 .tgz](https://github.com/Player-MINEPIG/dsh-prompt-assembler/releases/download/v1.1.3/dsh-prompt-assembler-1.1.3.tgz) |
 | 2. Jev 0.3.6（本项目适配的 fork） | [dsh-jev-plugin](https://github.com/Player-MINEPIG/dsh-jev-plugin) | [下载固定版本源码包](https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/2ec0510ffcdabe790df8c93b0b40aee07b93c342)，保存为 `dsh-jev-plugin-0.3.6.tgz` |
-| 3. 看点什么 1.0.0 | [dsh-message-console](https://github.com/Player-MINEPIG/dsh-message-console) | [Release 安装包](https://github.com/Player-MINEPIG/dsh-message-console/releases) |
+| 3. 看点什么 1.0.1 | [dsh-message-console](https://github.com/Player-MINEPIG/dsh-message-console) | [Release 安装包](https://github.com/Player-MINEPIG/dsh-message-console/releases/tag/v1.0.1) |
 
 ### GUI 安装（官方桌面端与 Web）
 
@@ -45,14 +45,14 @@ npm install -g '@deepseek-ai/dsh@>=0.2.1-0 <0.2.2-0'
 (
   dmc_profile=web
   set -eu
-  dmc_packages="$PWD/dsh-message-console-packages-1.0.0"
+  dmc_packages="$PWD/dsh-message-console-packages-1.0.1"
   mkdir -p "$dmc_packages"
   curl -fL 'https://github.com/Player-MINEPIG/dsh-prompt-assembler/releases/download/v1.1.3/dsh-prompt-assembler-1.1.3.tgz' -o "$dmc_packages/dsh-prompt-assembler-1.1.3.tgz"
   curl -fL 'https://codeload.github.com/Player-MINEPIG/dsh-jev-plugin/tar.gz/2ec0510ffcdabe790df8c93b0b40aee07b93c342' -o "$dmc_packages/dsh-jev-plugin-0.3.6.tgz"
-  curl -fL 'https://github.com/Player-MINEPIG/dsh-message-console/releases/download/v1.0.0/dsh-message-console-1.0.0.tgz' -o "$dmc_packages/dsh-message-console-1.0.0.tgz"
+  curl -fL 'https://github.com/Player-MINEPIG/dsh-message-console/releases/download/v1.0.1/dsh-message-console-1.0.1.tgz' -o "$dmc_packages/dsh-message-console-1.0.1.tgz"
   dsh plugin --profile "$dmc_profile" add "$dmc_packages/dsh-prompt-assembler-1.1.3.tgz"
   dsh plugin --profile "$dmc_profile" add "$dmc_packages/dsh-jev-plugin-0.3.6.tgz"
-  dsh plugin --profile "$dmc_profile" add "$dmc_packages/dsh-message-console-1.0.0.tgz"
+  dsh plugin --profile "$dmc_profile" add "$dmc_packages/dsh-message-console-1.0.1.tgz"
 )
 ```
 
