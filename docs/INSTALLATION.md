@@ -57,7 +57,7 @@ Jev fork 0.3.6 的 native 普通模型和 custom 路径均已用合成输入验�
 
 - GitHub 默认使用 DSH 运行用户已有的 `gh` 授权。先在同一用户下确认 `gh auth status --hostname github.com`，再启动插件。插件调用 `gh auth token --hostname github.com`，在内存中以该授权读取固定的 `api.github.com`，并通过 `/user` 验证登录身份。正常采集不会创建或修改授权；全局配置的“平台凭据”可主动启动 gh 网页设备授权。不将 token 写入插件配置、数据库、日志或模型输入。每次采集重新读取授权，分页复用该轮内存授权；命令及网络请求均有超时。
 - `gh` 不存在、授权失效或请求失败时显示错误并保留已有数据，不自动降级匿名访问。需要匿名读取公开仓库时，可在宿主插件配置中明确设置 `githubAuth: public`；默认值为 `gh`。无论 gh 授权本身具有什么权限，当前 GitHub 连接器只采集，`canPublish` 始终为 false。
-- GitHub 始终采集并显示全部 Issue 和 PR，包括已关闭及已合并状态；手动、自动整理均按内容变化处理，不再按关闭状态跳过，旧 includeClosed 设置不再生效。API 采集关闭、重开、合并事件及操作者（[GitHub 事件字段](https://docs.github.com/en/rest/using-the-rest-api/issue-event-types)），结合实际 gh 登录身份和此前内容判断是否值得查看。仅本人关闭/合并且无其他关注点时通常无需介入；关闭项最新分析无需介入时清除旧待处理和未发送旧草稿，保留未读与历史；他人操作提示查看；身份或事件缺失不猜测。首次补采历史状态事件可能产生一次内容版本更新，分析须区分旧事件与新变化。Release 照常整理。
+- GitHub 始终采集并显示全部 Issue 和 PR，包括已关闭及已合并状态；手动、自动整理均按内容变化处理，不再按关闭状态跳过，旧 includeClosed 设置不再生效。API 采集关闭、重开、合并事件及操作者（[GitHub 事件字段](https://docs.github.com/en/rest/using-the-rest-api/issue-event-types)），结合实际 gh 登录身份和此前内容判断是否值得查看。仅本人关闭/合并且无其他关注点时通常无需介入；Issue/PR 最新有效分析无需介入时标为无需处理，与开放、关闭或合并状态无关；未发送旧草稿保留正文并标为已替代，发送中或结果不明的草稿仍保留核实提醒，阅读进度与历史不变；他人操作提示查看；身份或事件缺失不猜测。首次补采历史状态事件可能产生一次内容版本更新，分析须区分旧事件与新变化。Release 照常整理。
 - 从旧 Cookie 采集切换时沿用旧 Release 和 PR 的本地 ID，保留历史版本、会话、评价和草稿引用。API 返回的 Markdown 正文与补全上下文可能产生一轮更新提示，旧草稿会按内容变化规则失效；再次采集相同内容不会重复更新。Release 与 API 数字身份建立关联后，标签改名仍沿用同一内容项。若首次切换前标签已经改名且旧记录没有数字身份，则无法可靠识别为同一 Release。
 - `cookieFile` 用于 B 站视频评论采集及按来源授权的评论发送。macOS 可显式运行 `node scripts/import-chrome-cookies.mjs .local/credentials/chrome-cookies.json`。默认 Chrome 的 Default profile，可将 `"Profile 1"` 作为第三个参数。导入文件权限为 0600，不会自动续期。旧文件中的 GitHub Cookie 不再用于采集。
 - GitHub 仓库读取目前按完整快照扫描，较大仓库会产生较多请求；限流后保留已有数据，未完整获取不会推进基线。尚无增量缓存。
