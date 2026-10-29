@@ -57,21 +57,22 @@ export function useRemoteResource(path, { revision = 0, pollMs = 0 } = {}) {
   const generation = useRef(0);
   useEffect(() => {
     const current = ++generation.current;
-    let requestNumber = 0;
     if (!path) { setResource({ path, data: null, error: '', loading: false }); return; }
+    const controller = new AbortController();
+    let timer = null;
     setResource(previous => ({ path, data: previous.path === path ? previous.data : null, error: '', loading: true }));
     const pull = async () => {
-      const attempt = ++requestNumber;
       try {
-        const data = await request(path);
-        if (generation.current === current && attempt === requestNumber) setResource({ path, data, error: '', loading: false });
+        const data = await request(path, undefined, { signal: controller.signal });
+        if (generation.current === current) setResource({ path, data, error: '', loading: false });
       } catch (error) {
-        if (generation.current === current && attempt === requestNumber) setResource(previous => ({ ...previous, error: error.message, loading: false }));
+        if (generation.current === current) setResource(previous => ({ ...previous, error: error.message, loading: false }));
+      } finally {
+        if (generation.current === current && pollMs > 0) timer = setTimeout(pull, pollMs);
       }
     };
     void pull();
-    const timer = pollMs > 0 ? setInterval(pull, pollMs) : null;
-    return () => { generation.current++; if (timer !== null) clearInterval(timer); };
+    return () => { generation.current++; controller.abort(); if (timer !== null) clearTimeout(timer); };
   }, [path, revision, pollMs]);
   return resource.path === path ? resource : { data: null, error: '', loading: Boolean(path) };
 }
