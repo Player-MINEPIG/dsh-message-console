@@ -2,7 +2,7 @@
 
 面向个人的 DSH 消息聚合插件，在一个入口查看 GitHub 与 B站的变化、分析结果和待处理事项。
 
-**版本：1.0.0** · [发布说明](docs/releases/v1.0.0.md)
+**版本：1.0.0** · [发布说明](docs/releases/v1.0.0.md) · [宣传视频（B站）](https://www.bilibili.com/video/BV1cpxc6qEuH/)
 
 ## 主要功能
 
@@ -39,7 +39,7 @@
 npm install -g '@deepseek-ai/dsh@>=0.2.1-0 <0.2.2-0'
 ```
 
-先停止目标 Host。以下命令下载三个包并依次安装到 `web` profile；使用其他 profile 时修改 `dmc_profile=web`。下载目录需要保留，供后续包管理使用。命令面向 v1.0.0 Release 发布后的安装包；发布前可按[源码构建步骤](docs/INSTALLATION.md#从源码构建)生成本地包。
+先停止目标 Host。以下命令下载三个包并依次安装到 `web` profile；使用其他 profile 时修改 `dmc_profile=web`。下载目录需要保留，供后续包管理使用。需要从源码安装时，参见[源码构建步骤](docs/INSTALLATION.md#从源码构建)。
 
 ```sh
 (
